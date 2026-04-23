@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+
+# personal data — do not commit
+resume.txt
+cover_letter.txt
+history.json
+reports/
+observability.db
+
+# debug artifacts
+debug_html.txt
