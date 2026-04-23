@@ -1,0 +1,25 @@
+{
+  "name": "job-automator",
+  "version": "1.0.0",
+  "description": "Playwright + LangChain job analysis tool powered by Gemma",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "build": "tsc",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.0",
+    "@langchain/ollama": "^0.2.0",
+    "better-sqlite3": "^11.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
