@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Job Automator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Sidebar ───────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-mark">JA</span>
+      <span class="logo-text">Job Automator</span>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-btn active" data-tab="analyze">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Analyze Job
+      </button>
+      <button class="nav-btn" data-tab="browse">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        Browse Jobs
+      </button>
+      <button class="nav-btn" data-tab="cover">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Cover Letter
+      </button>
+      <button class="nav-btn" data-tab="demo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Auto-Fill Demo
+      </button>
+      <button class="nav-btn" data-tab="history">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        History
+      </button>
+      <button class="nav-btn" data-tab="observe">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Observability
+      </button>
+    </nav>
+
+    <div class="resume-panel">
+      <div class="resume-panel-header">
+        <span class="resume-panel-title">Resume</span>
+        <span class="resume-badge" id="resume-badge">not set</span>
+      </div>
+      <textarea
+        id="resume-input"
+        class="resume-textarea"
+        placeholder="Paste your resume here…&#10;&#10;The analyzer will compare every job against this text."
+        spellcheck="false"
+      ></textarea>
+      <button class="btn btn-secondary btn-sm" id="save-resume-btn">Save</button>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Analyze tab -->
+    <section class="tab-panel active" id="tab-analyze">
+      <div class="panel-header">
+        <h1 class="panel-title">Analyze Job</h1>
+        <p class="panel-sub">Paste a job URL — Playwright scrapes it, Gemma scores your fit.</p>
+      </div>
+
+      <div class="card">
+        <div class="form-row">
+          <input id="analyze-url" class="input" type="url" placeholder="https://boards.greenhouse.io/company/jobs/12345" />
+          <label class="checkbox-label">
+            <input type="checkbox" id="analyze-save" /> Save report
+          </label>
+          <button class="btn btn-primary" id="analyze-btn">Analyze</button>
+        </div>
+      </div>
+
+      <div id="analyze-log" class="progress-log hidden"></div>
+      <div id="analyze-result" class="hidden"></div>
+    </section>
+
+    <!-- Browse tab -->
+    <section class="tab-panel" id="tab-browse">
+      <div class="panel-header">
+        <h1 class="panel-title">Browse Jobs</h1>
+        <p class="panel-sub">Enter a careers page URL — returns all open roles with one-click analysis.</p>
+      </div>
+
+      <div class="card">
+        <div class="form-row">
+          <input id="browse-url" class="input" type="url" placeholder="https://company.com/careers" />
+          <button class="btn btn-primary" id="browse-btn">Load Jobs</button>
+        </div>
+      </div>
+
+      <div id="browse-info" class="hidden"></div>
+      <div id="browse-filters" class="hidden">
+        <input id="browse-keyword" class="input" placeholder="Filter by keyword…" style="max-width:320px" />
+      </div>
+      <div id="browse-jobs"></div>
+    </section>
+
+    <!-- Cover Letter tab -->
+    <section class="tab-panel" id="tab-cover">
+      <div class="panel-header">
+        <h1 class="panel-title">Cover Letter</h1>
+        <p class="panel-sub">Gemma writes a tailored 3–4 paragraph letter from your resume and the role.</p>
+      </div>
+
+      <div class="card">
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="label">Company</label>
+            <input id="cover-company" class="input" placeholder="Acme Corp" />
+          </div>
+          <div class="form-group">
+            <label class="label">Role</label>
+            <input id="cover-role" class="input" placeholder="Senior Browser Automation Engineer" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="label">Skills to highlight <span class="label-hint">comma-separated</span></label>
+          <input id="cover-skills" class="input" placeholder="Playwright, TypeScript, LLM agents, CI/CD" />
+        </div>
+        <div style="margin-top:16px">
+          <button class="btn btn-primary" id="cover-btn">Generate Cover Letter</button>
+        </div>
+      </div>
+
+      <div id="cover-result" class="hidden"></div>
+    </section>
+
+    <!-- Demo tab -->
+    <section class="tab-panel" id="tab-demo">
+      <div class="panel-header">
+        <h1 class="panel-title">Auto-Fill Demo</h1>
+        <p class="panel-sub">Playwright opens a real browser on your screen and types the form live.</p>
+      </div>
+
+      <div class="card">
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="label">Name</label>
+            <input id="demo-name" class="input" value="Carlos Martinez" />
+          </div>
+          <div class="form-group">
+            <label class="label">Email</label>
+            <input id="demo-email" class="input" value="carlos199730@gmail.com" />
+          </div>
+          <div class="form-group">
+            <label class="label">Phone</label>
+            <input id="demo-phone" class="input" placeholder="Optional" />
+          </div>
+          <div class="form-group">
+            <label class="label">LinkedIn</label>
+            <input id="demo-linkedin" class="input" placeholder="Optional" />
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="label">Fill speed</label>
+          <div class="speed-options">
+            <label class="speed-opt"><input type="radio" name="demo-mode" value="instant" /> Instant</label>
+            <label class="speed-opt"><input type="radio" name="demo-mode" value="instant_per_field" /> Per field</label>
+            <label class="speed-opt"><input type="radio" name="demo-mode" value="type" checked /> Typing</label>
+          </div>
+        </div>
+
+        <div style="margin-top:20px">
+          <button class="btn btn-primary" id="demo-btn">Run Demo →</button>
+        </div>
+        <div id="demo-status" class="hidden" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <!-- History tab -->
+    <section class="tab-panel" id="tab-history">
+      <div class="panel-header">
+        <h1 class="panel-title">History</h1>
+        <p class="panel-sub">Every job you've analyzed, most recent first.</p>
+      </div>
+      <div id="history-content"></div>
+    </section>
+
+    <!-- Observability tab -->
+    <section class="tab-panel" id="tab-observe">
+      <div class="panel-header">
+        <h1 class="panel-title">Observability</h1>
+        <p class="panel-sub">Per-run traces, LLM latency, token usage, and selector drift alerts.</p>
+      </div>
+      <div id="observe-content"></div>
+    </section>
+
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

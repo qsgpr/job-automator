@@ -113,6 +113,31 @@ export function recordSelectorResult(params: SelectorResultParams): void {
   ).run(now(), context, selector, success ? 1 : 0, latencyMs, error ?? null);
 }
 
+export function getTimelineEvents(limitRuns = 30, limitEvents = 400): Record<string, unknown>[] {
+  return db.prepare(`
+    SELECT
+      e.time,
+      e.run_id,
+      r.run_type,
+      r.status AS run_status,
+      e.step,
+      e.tool_call,
+      ROUND(e.latency_ms, 0) AS latency_ms,
+      e.prompt_tokens,
+      e.completion_tokens,
+      e.total_tokens,
+      e.retry_of,
+      e.error
+    FROM run_events e
+    JOIN runs r ON r.run_id = e.run_id
+    WHERE r.run_id IN (
+      SELECT run_id FROM runs ORDER BY started_at DESC LIMIT ?
+    )
+    ORDER BY e.time DESC
+    LIMIT ?
+  `).all(limitRuns, limitEvents) as Record<string, unknown>[];
+}
+
 interface SelectorRow {
   context: string;
   selector: string;

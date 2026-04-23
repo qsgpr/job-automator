@@ -1,32 +1,11 @@
 import { Command } from 'commander';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { scrapeJob, listJobs, ScraperError } from './scraper.js';
 import { analyze, loadResume, formatReport } from './analyzer.js';
-import type { HistoryEntry } from './types.js';
+import { loadHistory, appendHistory, saveReport } from './history.js';
 
-const HISTORY_FILE = 'history.json';
-const REPORTS_DIR  = 'reports';
+// ─── history display ──────────────────────────────────────────────────────────
 
-// ─── history ──────────────────────────────────────────────────────────────────
-
-async function loadHistory(): Promise<HistoryEntry[]> {
-  if (!existsSync(HISTORY_FILE)) return [];
-  try {
-    return JSON.parse(await readFile(HISTORY_FILE, 'utf8')) as HistoryEntry[];
-  } catch {
-    return [];
-  }
-}
-
-async function appendHistory(entry: HistoryEntry): Promise<void> {
-  const history = await loadHistory();
-  history.push(entry);
-  await writeFile(HISTORY_FILE, JSON.stringify(history, null, 2));
-}
-
-function showHistory(history: HistoryEntry[]): void {
+function showHistory(history: Awaited<ReturnType<typeof loadHistory>>): void {
   if (!history.length) {
     console.log('\nNo jobs analyzed yet. Run: npx tsx src/main.ts <url>');
     return;
@@ -45,16 +24,6 @@ function showHistory(history: HistoryEntry[]): void {
     if (entry.saved_to) console.log(`  File  : ${entry.saved_to}`);
   }
   console.log(`\n${line}\n`);
-}
-
-async function saveReport(reportText: string, url: string, title: string): Promise<string> {
-  await mkdir(REPORTS_DIR, { recursive: true });
-  const timestamp = new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '');
-  const slug = title.toLowerCase().slice(0, 40).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const filename = join(REPORTS_DIR, `${timestamp}_${slug}.txt`);
-  const header = `URL: ${url}\nDate: ${new Date().toLocaleString()}\n`;
-  await writeFile(filename, header + reportText + '\n');
-  return filename;
 }
 
 // ─── main ─────────────────────────────────────────────────────────────────────
@@ -81,8 +50,6 @@ examples:
   const opts = program.opts<{ url?: string; save?: boolean; listJobs?: string; history?: boolean }>();
   const positional = program.args[0];
 
-  // ── subcommands that don't need a URL ─────────────────────────────────────
-
   if (opts.history) {
     showHistory(await loadHistory());
     return;
@@ -105,15 +72,9 @@ examples:
     return;
   }
 
-  // ── analyze a URL ─────────────────────────────────────────────────────────
-
   const url = positional ?? opts.url;
-  if (!url) {
-    program.help();
-    return;
-  }
+  if (!url) { program.help(); return; }
 
-  // Step 1: scrape
   console.log('\n[1/3] Scraping job description...');
   console.log(`      ${url}`);
   let jobDescription: string;
@@ -126,13 +87,11 @@ examples:
       console.error('\nTips:');
       console.error('  • Greenhouse and Lever job pages work reliably');
       console.error('  • Indeed and LinkedIn often block headless browsers');
-      console.error('  • Try the URL in your browser first to confirm it loads');
       process.exit(1);
     }
     throw e;
   }
 
-  // Step 2: load resume
   console.log('\n[2/3] Loading resume...');
   let resume: string;
   try {
@@ -140,16 +99,13 @@ examples:
     console.log(`      Loaded ${resume.length} characters`);
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') {
-      console.error('\nError: resume.txt not found.');
-      console.error('Create it: touch resume.txt  then paste your resume text inside.');
-    } else {
-      console.error(`\nError: ${err.message}`);
-    }
+    console.error(err.code === 'ENOENT'
+      ? '\nError: resume.txt not found. Create it and paste your resume inside.'
+      : `\nError: ${err.message}`
+    );
     process.exit(1);
   }
 
-  // Step 3: analyze
   console.log('\n[3/3] Analyzing with Gemma (30-60 seconds)...');
   let analysis;
   try {
@@ -170,16 +126,7 @@ examples:
   }
 
   const title = analysis.title || url.replace(/\/$/, '').split('/').pop()!.replace(/-/g, ' ');
-  await appendHistory({
-    date:     new Date().toLocaleString(),
-    title,
-    url,
-    score:    analysis.match_score ?? null,
-    saved_to: savedTo,
-  });
+  await appendHistory({ date: new Date().toLocaleString(), title, url, score: analysis.match_score ?? null, saved_to: savedTo });
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+main().catch(err => { console.error(err); process.exit(1); });
