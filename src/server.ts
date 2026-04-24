@@ -195,14 +195,30 @@ app.delete('/api/history', async (_req, res) => {
 
 // ── Resume merge (streaming NDJSON) ──────────────────────────────────────────
 
-app.post('/api/resume/merge', upload.array('files', 10), async (req, res) => {
+// Two-step middleware: catch multer errors and still reply with NDJSON so the
+// client's content-type check always succeeds and errors are displayed.
+app.post('/api/resume/merge',
+  (req, res, next) => upload.array('files', 10)(req, res, err => {
+    if (err) {
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.write(JSON.stringify({ type: 'error', message: `Upload error: ${err.message}` }) + '\n');
+      res.end();
+      return;
+    }
+    next();
+  }),
+  async (req, res) => {
   const files = (req.files as Express.Multer.File[]) ?? [];
-  if (!files.length) { res.status(400).json({ error: 'No files uploaded' }); return; }
 
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   res.flushHeaders();
   const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  if (!files.length) {
+    emit({ type: 'error', message: 'No files received. Supported formats: PDF, DOCX, TXT.' });
+    res.end(); return;
+  }
 
   try {
     // Extract text from each file

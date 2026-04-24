@@ -828,10 +828,14 @@ function initResumeTab() {
     });
   }
 
-  browseBtn.addEventListener('click', () => fileInput.click());
+  // Stop propagation so clicking "Browse files" doesn't also trigger the dropZone click handler
+  browseBtn.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
   fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
 
-  dropZone.addEventListener('click', () => fileInput.click());
+  // Only open file picker when clicking the zone itself, not child buttons
+  dropZone.addEventListener('click', e => {
+    if (!e.target.closest('button')) fileInput.click();
+  });
   dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
@@ -839,6 +843,8 @@ function initResumeTab() {
     dropZone.classList.remove('drag-over');
     addFiles(e.dataTransfer.files);
   });
+
+  const MERGE_BTN_LABEL = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg> Extract &amp; Update Master`;
 
   // Merge
   mergeBtn.addEventListener('click', async () => {
@@ -849,39 +855,63 @@ function initResumeTab() {
     logEl.classList.remove('hidden');
     resultEl.classList.add('hidden');
 
+    const resetBtn = () => { mergeBtn.disabled = false; mergeBtn.innerHTML = MERGE_BTN_LABEL; };
+
     const form = new FormData();
     staged.forEach(f => form.append('files', f));
 
-    const res = await fetch('/api/resume/merge', { method: 'POST', body: form });
+    let res;
+    try {
+      res = await fetch('/api/resume/merge', { method: 'POST', body: form });
+    } catch (e) {
+      appendLogEntry(logEl, `Network error: ${e.message}`, 'error');
+      resetBtn();
+      return;
+    }
+
+    // If the server returned a plain JSON error (not our NDJSON stream), show it
+    const ct = res.headers.get('content-type') ?? '';
+    if (!ct.includes('ndjson')) {
+      const text = await res.text().catch(() => '');
+      let msg = `Server error ${res.status}`;
+      try { msg = JSON.parse(text).error ?? msg; } catch {}
+      appendLogEntry(logEl, msg, 'error');
+      resetBtn();
+      return;
+    }
+
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
     let lastResult = null;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line);
-          if (evt.type === 'progress') {
-            appendLogEntry(logEl, evt.message, 'active');
-          } else if (evt.type === 'result') {
-            lastResult = evt;
-            appendLogEntry(logEl, 'Done', 'done');
-          } else if (evt.type === 'error') {
-            appendLogEntry(logEl, evt.message, 'error');
-          }
-        } catch {}
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'progress') {
+              appendLogEntry(logEl, evt.message, 'active');
+            } else if (evt.type === 'result') {
+              lastResult = evt;
+              appendLogEntry(logEl, 'Done', 'done');
+            } else if (evt.type === 'error') {
+              appendLogEntry(logEl, evt.message, 'error');
+            }
+          } catch {}
+        }
       }
+    } catch (e) {
+      appendLogEntry(logEl, `Stream error: ${e.message}`, 'error');
     }
 
-    mergeBtn.disabled = false;
-    mergeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg> Extract &amp; Update Master`;
+    resetBtn();
 
     if (lastResult) {
       renderMergeResult(lastResult, resultEl, masterText, metaEl);
