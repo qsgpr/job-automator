@@ -1,12 +1,43 @@
 import express from 'express';
+import multer from 'multer';
 import { readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { scrapeJob, listJobs, findCareersUrl, ScraperError } from './scraper.js';
-import { analyze, formatReport, generateCoverLetter } from './analyzer.js';
+import { analyze, formatReport, generateCoverLetter, mergeResumes, diffResumes } from './analyzer.js';
 import { autofillForm } from './autofill.js';
 import { loadHistory, appendHistory, clearHistory, saveReport } from './history.js';
 import { getTimelineEvents, getSelectorReliability, getSelectorAlerts } from './observability.js';
+
+const _require = createRequire(import.meta.url);
+
+async function extractFileText(buffer: Buffer, mimetype: string, filename: string): Promise<string> {
+  const ext = extname(filename).toLowerCase();
+  if (ext === '.pdf' || mimetype === 'application/pdf') {
+    const pdfParse = _require('pdf-parse') as (b: Buffer) => Promise<{ text: string }>;
+    const data = await pdfParse(buffer);
+    return data.text;
+  }
+  if (ext === '.docx' || mimetype.includes('wordprocessingml')) {
+    const mammoth = await import('mammoth');
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  }
+  return buffer.toString('utf8');
+}
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 10 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /\.(pdf|docx|txt)$/i.test(file.originalname)
+      || ['text/plain', 'application/pdf',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+         ].includes(file.mimetype);
+    cb(null, ok);
+  },
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -161,6 +192,58 @@ app.delete('/api/history', async (_req, res) => {
 });
 
 // ── Autofill demo ─────────────────────────────────────────────────────────────
+
+// ── Resume merge (streaming NDJSON) ──────────────────────────────────────────
+
+app.post('/api/resume/merge', upload.array('files', 10), async (req, res) => {
+  const files = (req.files as Express.Multer.File[]) ?? [];
+  if (!files.length) { res.status(400).json({ error: 'No files uploaded' }); return; }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    // Extract text from each file
+    const texts: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      emit({ type: 'progress', message: `Reading ${f.originalname} (${i + 1}/${files.length})…` });
+      const text = await extractFileText(f.buffer, f.mimetype, f.originalname);
+      if (!text.trim()) {
+        emit({ type: 'error', message: `Could not extract text from ${f.originalname}` });
+        res.end(); return;
+      }
+      texts.push(text);
+    }
+
+    // Load existing master
+    let master = '';
+    try { master = (await readFile('resume.txt', 'utf8')).trim(); } catch {}
+
+    let additions = '';
+    let updated = '';
+
+    if (!master) {
+      emit({ type: 'progress', message: texts.length > 1
+        ? `Merging ${texts.length} files into a master resume… (30–60 s)`
+        : 'Creating master resume…' });
+      updated = await mergeResumes(texts);
+      additions = updated;
+    } else {
+      emit({ type: 'progress', message: 'Comparing files against your master resume…' });
+      emit({ type: 'progress', message: 'Gemma is extracting new information… (30–60 s)' });
+      additions = await diffResumes(master, texts);
+      updated = additions ? `${master}\n\n${additions}` : master;
+    }
+
+    emit({ type: 'result', additions, updated, had_master: !!master, filenames: files.map(f => f.originalname) });
+  } catch (e) {
+    emit({ type: 'error', message: String(e) });
+  }
+  res.end();
+});
 
 app.post('/api/autofill', async (req, res) => {
   const { name, email, phone, linkedin, resumeText, coverLetter, mode } = req.body;

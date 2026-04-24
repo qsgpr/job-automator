@@ -43,6 +43,10 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Observability
       </button>
+      <button class="nav-btn" data-tab="resume">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        Resume Builder
+      </button>
     </nav>
 
     <div class="resume-panel">
@@ -188,6 +192,52 @@
         <p class="panel-sub">Every job you've analyzed, most recent first.</p>
       </div>
       <div id="history-content"></div>
+    </section>
+
+    <!-- Resume Builder tab -->
+    <section class="tab-panel" id="tab-resume">
+      <div class="panel-header">
+        <h1 class="panel-title">Resume Builder</h1>
+        <p class="panel-sub">Upload any resume files — Gemma extracts only what's new and merges it into your master.</p>
+      </div>
+
+      <div class="card">
+        <div class="drop-zone" id="drop-zone">
+          <div class="drop-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="drop-title">Drop resume files here</div>
+          <div class="drop-hint">PDF · DOCX · TXT &nbsp;·&nbsp; up to 10 files</div>
+          <button class="btn btn-secondary btn-sm" id="browse-files-btn" style="margin-top:14px">Browse files</button>
+        </div>
+        <input type="file" id="resume-file-input" multiple accept=".pdf,.docx,.txt" hidden />
+
+        <div id="staged-files" class="staged-files hidden"></div>
+
+        <div id="merge-actions" class="hidden" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-soft)">
+          <button class="btn btn-primary" id="merge-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+            Extract &amp; Update Master
+          </button>
+          <span style="font-size:12px;color:var(--text-muted);margin-left:12px" id="merge-hint">Gemma will find only new info not already in your master</span>
+        </div>
+      </div>
+
+      <div id="merge-log" class="progress-log hidden" style="font-size:12px"></div>
+      <div id="merge-result" class="hidden"></div>
+
+      <div class="divider"></div>
+      <div class="section-title" style="margin-top:4px">Master Resume</div>
+      <div class="card">
+        <div id="master-meta" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
+        <textarea id="master-resume-text" class="master-textarea"
+          placeholder="No master resume yet. Upload files above, or type / paste directly here."
+          spellcheck="false"></textarea>
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+          <button class="btn btn-primary btn-sm" id="save-master-btn">Save Changes</button>
+          <span id="master-save-status" style="font-size:12px;color:var(--text-dim)"></span>
+        </div>
+      </div>
     </section>
 
     <!-- Observability tab -->

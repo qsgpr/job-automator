@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .DS_Store
+venv/
+.claude/
 
 # personal data — do not commit
 resume.txt

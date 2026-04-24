@@ -750,6 +750,207 @@ async function loadObservability() {
   }
 }
 
+// ── Resume Builder tab ────────────────────────────────────────────────────────
+
+function initResumeTab() {
+  let staged = [];
+
+  const dropZone   = document.getElementById('drop-zone');
+  const fileInput  = document.getElementById('resume-file-input');
+  const browseBtn  = document.getElementById('browse-files-btn');
+  const stagedEl   = document.getElementById('staged-files');
+  const actionsEl  = document.getElementById('merge-actions');
+  const mergeBtn   = document.getElementById('merge-btn');
+  const logEl      = document.getElementById('merge-log');
+  const resultEl   = document.getElementById('merge-result');
+  const masterText = document.getElementById('master-resume-text');
+  const saveBtn    = document.getElementById('save-master-btn');
+  const statusEl   = document.getElementById('master-save-status');
+  const metaEl     = document.getElementById('master-meta');
+
+  // Load current master into textarea
+  api.get('/api/resume').then(({ content, found }) => {
+    masterText.value = content;
+    setMasterMeta(metaEl, content, found);
+    // Also sync sidebar badge
+    const badge = document.getElementById('resume-badge');
+    if (badge) setResumeBadge(badge, content, found);
+  });
+
+  // Save master
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    const { ok } = await api.post('/api/resume', { content: masterText.value });
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save Changes';
+    if (ok) {
+      statusEl.textContent = 'Saved';
+      setTimeout(() => { statusEl.textContent = ''; }, 2000);
+      setMasterMeta(metaEl, masterText.value, true);
+      const badge = document.getElementById('resume-badge');
+      if (badge) setResumeBadge(badge, masterText.value, true);
+      toast('Master resume saved');
+    } else {
+      toast('Save failed', 'error');
+    }
+  });
+
+  // File handling
+  function addFiles(files) {
+    const valid = Array.from(files).filter(f => /\.(pdf|docx|txt)$/i.test(f.name));
+    if (!valid.length) { toast('Only PDF, DOCX, and TXT files are supported', 'error'); return; }
+    staged = [...staged, ...valid].slice(0, 10);
+    renderStaged();
+  }
+
+  function renderStaged() {
+    if (!staged.length) {
+      stagedEl.classList.add('hidden');
+      actionsEl.classList.add('hidden');
+      return;
+    }
+    stagedEl.innerHTML = staged.map((f, i) => `
+      <div class="staged-file">
+        <span class="staged-file-icon">${fileTypeIcon(f.name)}</span>
+        <span class="staged-file-name">${esc(f.name)}</span>
+        <span class="staged-file-size">${fmtSize(f.size)}</span>
+        <button class="staged-file-remove" data-i="${i}">✕</button>
+      </div>`).join('');
+    stagedEl.classList.remove('hidden');
+    actionsEl.classList.remove('hidden');
+
+    stagedEl.querySelectorAll('.staged-file-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        staged.splice(parseInt(btn.dataset.i), 1);
+        renderStaged();
+      });
+    });
+  }
+
+  browseBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    addFiles(e.dataTransfer.files);
+  });
+
+  // Merge
+  mergeBtn.addEventListener('click', async () => {
+    if (!staged.length) return;
+    mergeBtn.disabled = true;
+    mergeBtn.innerHTML = '<span class="spinner"></span> Processing…';
+    logEl.innerHTML = '';
+    logEl.classList.remove('hidden');
+    resultEl.classList.add('hidden');
+
+    const form = new FormData();
+    staged.forEach(f => form.append('files', f));
+
+    const res = await fetch('/api/resume/merge', { method: 'POST', body: form });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let lastResult = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (evt.type === 'progress') {
+            appendLogEntry(logEl, evt.message, 'active');
+          } else if (evt.type === 'result') {
+            lastResult = evt;
+            appendLogEntry(logEl, 'Done', 'done');
+          } else if (evt.type === 'error') {
+            appendLogEntry(logEl, evt.message, 'error');
+          }
+        } catch {}
+      }
+    }
+
+    mergeBtn.disabled = false;
+    mergeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg> Extract &amp; Update Master`;
+
+    if (lastResult) {
+      renderMergeResult(lastResult, resultEl, masterText, metaEl);
+      staged = [];
+      renderStaged();
+    }
+  });
+
+  function renderMergeResult(r, resultEl, masterText, metaEl) {
+    const { had_master, additions, updated, filenames } = r;
+    masterText.value = updated;
+    setMasterMeta(metaEl, updated, true);
+    const badge = document.getElementById('resume-badge');
+    if (badge) setResumeBadge(badge, updated, true);
+
+    let html = '';
+    if (!had_master) {
+      html = `
+        <div class="card result-card" style="border-color:var(--success-border)">
+          <div style="color:var(--success);font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            ${ICON_CHECK} Master created from ${filenames.length} file${filenames.length !== 1 ? 's' : ''}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim)">${updated.length.toLocaleString()} characters · Click <strong>Save Changes</strong> to save.</div>
+        </div>`;
+    } else if (!additions) {
+      html = `
+        <div class="card" style="border-color:var(--success-border)">
+          <div style="color:var(--success);font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px">
+            ${ICON_CHECK} Already up to date — no new information found in the uploaded file${filenames.length !== 1 ? 's' : ''}.
+          </div>
+        </div>`;
+    } else {
+      html = `
+        <div class="card result-card">
+          <div style="font-weight:600;font-size:13px;color:var(--success);display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            ${ICON_CHECK} New information extracted
+          </div>
+          <div class="additions-box">${esc(additions)}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:10px">
+            Appended to your master resume below. Click <strong>Save Changes</strong> to save.
+          </div>
+        </div>`;
+    }
+
+    resultEl.innerHTML = html;
+    resultEl.classList.remove('hidden');
+  }
+}
+
+function setMasterMeta(el, content, found) {
+  if (!el) return;
+  const chars = content?.trim().length ?? 0;
+  el.textContent = found && chars > 0
+    ? `${chars.toLocaleString()} characters · ${content.trim().split('\n').length} lines`
+    : '';
+}
+
+function fileTypeIcon(name) {
+  if (/\.pdf$/i.test(name)) return '📄';
+  if (/\.docx$/i.test(name)) return '📝';
+  return '📃';
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -759,4 +960,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initBrowseTab();
   initCoverTab();
   initDemoTab();
+  initResumeTab();
 });

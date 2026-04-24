@@ -159,3 +159,51 @@ export async function generateCoverLetter(
   const result = await chain.invoke({ company, role, resume, skills: skills || 'relevant technical experience' });
   return (result.content as string).trim();
 }
+
+// ── Resume merge / diff ────────────────────────────────────────────────────────
+
+const DIFF_PROMPT = ChatPromptTemplate.fromMessages([
+  ['system', `You are a professional resume editor. You will receive a MASTER RESUME and one or more NEW FILES.
+
+Extract ONLY information from the new files that is genuinely absent from the master resume:
+- Jobs or roles not in the master
+- Projects not in the master
+- Skills or certifications not listed
+- Achievements or metrics not captured
+
+Do NOT include anything already in the master, even if worded differently.
+Format additions as clean resume sections (plain text, same style as the master).
+If nothing is new, respond with exactly: NO_NEW_CONTENT`],
+  ['human', 'MASTER RESUME:\n{master}\n\n{divider}\n\nNEW FILES:\n{files}'],
+]);
+
+const CREATE_MASTER_PROMPT = ChatPromptTemplate.fromMessages([
+  ['system', `You are a professional resume writer. Merge multiple resume versions into one comprehensive master resume.
+
+Rules:
+- Include ALL unique experience, projects, skills, and achievements from every version
+- Remove exact duplicates but keep variations that add detail
+- Preserve specific numbers, metrics, and technical terms exactly as written
+- Use clear section headers: SUMMARY, EXPERIENCE, PROJECTS, SKILLS, EDUCATION, CERTIFICATIONS
+- Most recent items first within each section
+- Plain text output only`],
+  ['human', 'Merge {count} resume version(s) into one master:\n\n{resumes}'],
+]);
+
+export async function mergeResumes(texts: string[]): Promise<string> {
+  if (texts.length === 1) return texts[0].trim();
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const chain = CREATE_MASTER_PROMPT.pipe(llm);
+  const resumes = texts.map((t, i) => `=== VERSION ${i + 1} ===\n${t.trim()}`).join('\n\n');
+  const result = await chain.invoke({ resumes, count: texts.length });
+  return (result.content as string).trim();
+}
+
+export async function diffResumes(master: string, newTexts: string[]): Promise<string> {
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const chain = DIFF_PROMPT.pipe(llm);
+  const files = newTexts.map((t, i) => `=== FILE ${i + 1} ===\n${t.trim()}`).join('\n\n');
+  const result = await chain.invoke({ master, files, divider: '─'.repeat(40) });
+  const text = (result.content as string).trim();
+  return text === 'NO_NEW_CONTENT' ? '' : text;
+}
