@@ -1,107 +1,87 @@
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--success)';
-  if (score >= 50) return 'var(--warning)';
-  return 'var(--danger)';
+const ICON_CHECK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+const ICON_X     = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+const ICON_DOT   = `<svg width="5" height="5" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="5"/></svg>`;
+
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function scoreLabel(score) {
-  if (score >= 70) return 'Strong match';
-  if (score >= 50) return 'Partial match';
-  return 'Weak match';
+function scoreColor(s) {
+  return s >= 70 ? 'var(--success)' : s >= 50 ? 'var(--warning)' : 'var(--danger)';
 }
 
-function scoreClass(score) {
-  if (score >= 70) return 'score-strength';
-  if (score >= 50) return 'score-partial';
-  return 'score-weak';
+function scoreLabel(s) {
+  return s >= 70 ? 'Strong match' : s >= 50 ? 'Partial match' : 'Weak match';
+}
+
+function scoreBadgeClass(s) {
+  return s >= 70 ? 'strong' : s >= 50 ? 'partial' : 'weak';
 }
 
 function toast(msg, type = 'success') {
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
-}
-
-function el(tag, cls, inner) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (inner !== undefined) e.innerHTML = inner;
-  return e;
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
 
-async function apiGet(path) {
-  const r = await fetch(path);
-  return r.json();
-}
+const api = {
+  get:    path       => fetch(path).then(r => r.json()),
+  post:   (path, b)  => fetch(path, { method: 'POST',   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  delete: path       => fetch(path, { method: 'DELETE' }).then(r => r.json()),
 
-async function apiPost(path, body) {
-  const r = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return r.json();
-}
-
-async function apiDelete(path) {
-  const r = await fetch(path, { method: 'DELETE' });
-  return r.json();
-}
-
-// Streams NDJSON from a POST endpoint; calls onEvent for each parsed object.
-async function streamPost(path, body, onEvent) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop() ?? '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try { onEvent(JSON.parse(line)); } catch {}
+  async stream(path, body, onEvent) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.trim()) try { onEvent(JSON.parse(line)); } catch {}
+      }
     }
-  }
-}
+  },
+};
 
 // ── Resume sidebar ────────────────────────────────────────────────────────────
 
 async function initResume() {
-  const input  = document.getElementById('resume-input');
-  const badge  = document.getElementById('resume-badge');
+  const input   = document.getElementById('resume-input');
+  const badge   = document.getElementById('resume-badge');
   const saveBtn = document.getElementById('save-resume-btn');
 
-  const { content, found } = await apiGet('/api/resume');
+  const { content, found } = await api.get('/api/resume');
   input.value = content;
-  updateResumeBadge(badge, content, found);
+  setResumeBadge(badge, content, found);
 
   saveBtn.addEventListener('click', async () => {
     saveBtn.disabled = true;
-    const { ok } = await apiPost('/api/resume', { content: input.value });
+    saveBtn.textContent = 'Saving…';
+    const { ok } = await api.post('/api/resume', { content: input.value });
     saveBtn.disabled = false;
-    if (ok) {
-      updateResumeBadge(badge, input.value, true);
-      toast('Resume saved');
-    } else {
-      toast('Save failed', 'error');
-    }
+    saveBtn.textContent = 'Save';
+    if (ok) { setResumeBadge(badge, input.value, true); toast('Resume saved'); }
+    else toast('Save failed', 'error');
   });
 }
 
-function updateResumeBadge(badge, content, found) {
+function setResumeBadge(badge, content, found) {
   const chars = content?.trim().length ?? 0;
   if (found && chars > 0) {
     badge.textContent = `${chars.toLocaleString()} chars`;
@@ -115,61 +95,271 @@ function updateResumeBadge(badge, content, found) {
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
 function initTabs() {
-  const btns   = document.querySelectorAll('.nav-btn');
-  const panels = document.querySelectorAll('.tab-panel');
-
-  btns.forEach(btn => {
+  document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tab = btn.dataset.tab;
-      btns.forEach(b => b.classList.toggle('active', b === btn));
-      panels.forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
-      onTabActivate(tab);
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
+      if (tab === 'history') loadHistory();
+      if (tab === 'observe') loadObservability();
     });
   });
 }
 
-function onTabActivate(tab) {
-  if (tab === 'history')  loadHistory();
-  if (tab === 'observe')  loadObservability();
+// ── Analysis progress (stepper + skeleton) ────────────────────────────────────
+
+function buildStepperHTML() {
+  const steps = [
+    { name: 'Load resume',    hint: 'resume.txt' },
+    { name: 'Scrape page',    hint: 'Playwright Chrome' },
+    { name: 'Analyze',        hint: 'Gemma 4 26B · 30–60 s' },
+  ];
+  const items = steps.map((s, i) => `
+    <div class="step-item">
+      <div class="step-dot" id="sd-${i+1}">${i+1}</div>
+      <div class="step-name" id="sn-${i+1}">${s.name}</div>
+      <div class="step-hint" id="sh-${i+1}">${s.hint}</div>
+    </div>
+    ${i < 2 ? `<div class="step-connector" id="sc-${i+1}"></div>` : ''}
+  `).join('');
+
+  return `
+    <div class="analysis-progress">
+      <div class="stepper">${items}</div>
+      <div class="progress-track"><div class="progress-fill" id="pf"></div></div>
+    </div>`;
+}
+
+function buildSkeletonHTML() {
+  const shimmerLines = (widths, h = 12) =>
+    widths.map(w => `<div class="skel-line shimmer" style="width:${w}%;height:${h}px;margin-bottom:7px"></div>`).join('');
+
+  const shimmerItems = count =>
+    Array.from({ length: count }, () =>
+      `<div class="result-item shimmer" style="height:38px;border-radius:7px;margin-bottom:6px"></div>`
+    ).join('');
+
+  return `
+    <div class="card" style="margin-bottom:16px">
+      <div class="score-card">
+        <div class="skel-circle shimmer"></div>
+        <div style="flex:1;padding-top:6px">
+          ${shimmerLines([55, 30, 85, 70])}
+        </div>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="col-card strengths">
+        <div class="col-card-header">
+          <div class="skel-line shimmer" style="width:50%;height:11px"></div>
+        </div>
+        ${shimmerItems(3)}
+      </div>
+      <div class="col-card gaps">
+        <div class="col-card-header">
+          <div class="skel-line shimmer" style="width:50%;height:11px"></div>
+        </div>
+        ${shimmerItems(3)}
+      </div>
+    </div>`;
+}
+
+const PROGRESS_MAP = {
+  '1a': 5, '1f': 20,
+  '2a': 25, '2f': 50,
+  '3a': 55, '3f': 100,
+};
+
+function applyStepUpdate(step, done, message) {
+  const dot  = document.getElementById(`sd-${step}`);
+  const name = document.getElementById(`sn-${step}`);
+  const hint = document.getElementById(`sh-${step}`);
+  const fill = document.getElementById('pf');
+  if (!dot) return;
+
+  if (done) {
+    dot.className  = 'step-dot done';
+    dot.innerHTML  = ICON_CHECK;
+    const conn = document.getElementById(`sc-${step}`);
+    if (conn) conn.classList.add('done');
+    name?.classList.add('done');
+    hint?.classList.add('done');
+  } else {
+    dot.className = 'step-dot active';
+    dot.innerHTML = `<span class="spinner-sm"></span>`;
+    name?.classList.add('active');
+    hint?.classList.add('active');
+  }
+
+  if (hint && message) hint.textContent = message;
+  if (fill) fill.style.width = (PROGRESS_MAP[`${step}${done ? 'f' : 'a'}`] ?? 0) + '%';
+}
+
+// ── Analysis result HTML ──────────────────────────────────────────────────────
+
+function buildResultItems(items, type) {
+  if (!items?.length) {
+    return `<div class="col-card-empty">None identified</div>`;
+  }
+  const icon = type === 'strength' ? ICON_CHECK : ICON_X;
+  return items.map(s => `
+    <div class="result-item ${type}-item">
+      <span class="result-item-icon">${icon}</span>
+      <span>${esc(s)}</span>
+    </div>`).join('');
+}
+
+function buildExpandItems(items) {
+  return items.map(s => `
+    <div class="expand-item">
+      <span class="expand-item-dot"></span>
+      <span>${esc(s)}</span>
+    </div>`).join('');
+}
+
+function renderAnalysisHTML(analysis, savedTo) {
+  const score = analysis.match_score ?? 0;
+  const circ  = 2 * Math.PI * 42;
+  const offset = circ * (1 - score / 100);
+  const color  = scoreColor(score);
+
+  const strengths = buildResultItems(analysis.strengths, 'strength');
+  const gaps      = buildResultItems(analysis.gaps, 'gap');
+  const reqs      = analysis.requirements?.length ? buildExpandItems(analysis.requirements) : '';
+  const nth       = analysis.nice_to_have?.length  ? buildExpandItems(analysis.nice_to_have)  : '';
+
+  return `
+  <div class="result-card">
+    <div class="card" style="margin-bottom:16px">
+      <div class="score-card">
+        <div class="score-circle-wrap">
+          <svg viewBox="0 0 110 110">
+            <circle class="score-ring-track" cx="55" cy="55" r="42"/>
+            <circle class="score-ring-fill"
+              cx="55" cy="55" r="42"
+              stroke="${color}"
+              stroke-dasharray="${circ.toFixed(2)}"
+              stroke-dashoffset="${circ.toFixed(2)}"
+              id="score-ring-anim"
+            />
+          </svg>
+          <div class="score-circle-value">
+            <span class="score-number" style="color:${color}">${score}</span>
+            <span class="score-label">/ 100</span>
+          </div>
+        </div>
+        <div class="score-meta">
+          ${analysis.title ? `<div class="score-title">${esc(analysis.title)}</div>` : ''}
+          <span class="score-badge ${scoreBadgeClass(score)}">${scoreLabel(score)}</span>
+          ${analysis.summary ? `<div class="score-summary-text">${esc(analysis.summary)}</div>` : ''}
+          ${savedTo ? `<div style="margin-top:10px;font-size:11px;color:var(--text-muted)">Saved → ${esc(savedTo)}</div>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="col-card strengths">
+        <div class="col-card-header">
+          <span class="col-card-title">Your Strengths</span>
+          <span class="col-card-count">${analysis.strengths?.length ?? 0}</span>
+        </div>
+        <div class="result-items">${strengths}</div>
+      </div>
+      <div class="col-card gaps">
+        <div class="col-card-header">
+          <span class="col-card-title">Gaps to Address</span>
+          <span class="col-card-count">${analysis.gaps?.length ?? 0}</span>
+        </div>
+        <div class="result-items">${gaps}</div>
+      </div>
+    </div>
+
+    ${reqs ? `
+    <div class="expand-section">
+      <button class="expand-btn">
+        <span class="chevron">›</span>
+        Key Requirements
+        <span style="margin-left:auto;font-size:11px;opacity:0.6">${analysis.requirements.length}</span>
+      </button>
+      <div class="expand-body">${reqs}</div>
+    </div>` : ''}
+
+    ${nth ? `
+    <div class="expand-section">
+      <button class="expand-btn">
+        <span class="chevron">›</span>
+        Nice to Have
+        <span style="margin-left:auto;font-size:11px;opacity:0.6">${analysis.nice_to_have.length}</span>
+      </button>
+      <div class="expand-body">${nth}</div>
+    </div>` : ''}
+  </div>`;
+}
+
+function attachResultHandlers(container) {
+  // Expand/collapse
+  container.querySelectorAll('.expand-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.classList.toggle('open');
+      btn.nextElementSibling.classList.toggle('open');
+    });
+  });
+
+  // Animate score ring
+  requestAnimationFrame(() => {
+    const ring = container.querySelector('#score-ring-anim');
+    if (ring) {
+      const circ = parseFloat(ring.getAttribute('stroke-dasharray'));
+      const score = parseInt(container.querySelector('.score-number')?.textContent ?? '0');
+      const target = circ * (1 - score / 100);
+      requestAnimationFrame(() => { ring.style.strokeDashoffset = target; });
+    }
+  });
 }
 
 // ── Analyze tab ───────────────────────────────────────────────────────────────
 
 function initAnalyzeTab() {
-  const btn     = document.getElementById('analyze-btn');
+  const btn      = document.getElementById('analyze-btn');
   const urlInput = document.getElementById('analyze-url');
-  const saveChk = document.getElementById('analyze-save');
-  const logEl   = document.getElementById('analyze-log');
+  const saveChk  = document.getElementById('analyze-save');
+  const logEl    = document.getElementById('analyze-log');
   const resultEl = document.getElementById('analyze-result');
+
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
 
   btn.addEventListener('click', async () => {
     const url = urlInput.value.trim();
-    if (!url) { toast('Enter a job URL first', 'error'); return; }
+    if (!url) { toast('Paste a job URL first', 'error'); return; }
 
+    // Reset
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Analyzing…';
-    logEl.innerHTML = '';
+    logEl.innerHTML   = buildStepperHTML();
     logEl.classList.remove('hidden');
-    resultEl.classList.add('hidden');
-    resultEl.innerHTML = '';
+    resultEl.innerHTML = buildSkeletonHTML();
+    resultEl.classList.remove('hidden');
 
     let lastResult = null;
 
-    await streamPost('/api/analyze', { url, save: saveChk.checked }, evt => {
+    await api.stream('/api/analyze', { url, save: saveChk.checked }, evt => {
       if (evt.type === 'progress') {
-        appendLogEntry(logEl, evt.message, evt.done ? 'done' : 'active');
+        applyStepUpdate(evt.step, !!evt.done, evt.message);
       } else if (evt.type === 'result') {
         lastResult = evt;
-        appendLogEntry(logEl, 'Analysis complete ✓', 'done');
+        applyStepUpdate(3, true, 'Done');
       } else if (evt.type === 'error') {
-        appendLogEntry(logEl, evt.message, 'error');
+        resultEl.innerHTML = `
+          <div class="card" style="border-color:var(--danger-border)">
+            <div style="color:var(--danger);font-size:13px;font-weight:600;margin-bottom:8px">Analysis failed</div>
+            <div style="font-size:12px;color:var(--text-dim);font-family:var(--mono);white-space:pre-wrap">${esc(evt.message)}</div>
+          </div>`;
       }
     });
 
     if (lastResult) {
       resultEl.innerHTML = renderAnalysisHTML(lastResult.data, lastResult.savedTo);
-      resultEl.classList.remove('hidden');
-      attachExpandHandlers(resultEl);
+      attachResultHandlers(resultEl);
     }
 
     btn.disabled = false;
@@ -177,121 +367,18 @@ function initAnalyzeTab() {
   });
 }
 
-function appendLogEntry(container, message, state = 'active') {
-  const icons = { done: '✓', error: '✗', active: '›' };
-  const existing = container.querySelector(`.log-entry.active`);
-  if (existing) existing.classList.remove('active');
-
-  const div = el('div', `log-entry ${state}`);
-  div.innerHTML = `<span class="log-icon">${icons[state] ?? '›'}</span><span>${message}</span>`;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-}
-
-function renderAnalysisHTML(analysis, savedTo) {
-  const score = analysis.match_score ?? 0;
-  const circ  = 2 * Math.PI * 42; // circumference for r=42
-  const offset = circ * (1 - score / 100);
-  const color  = scoreColor(score);
-
-  const reqHtml  = listItems(analysis.requirements ?? [], false);
-  const nthHtml  = listItems(analysis.nice_to_have ?? [], false);
-
-  return `
-  <div class="card">
-    <div class="score-card">
-      <div class="score-circle-wrap">
-        <svg viewBox="0 0 110 110">
-          <circle class="score-ring-track" cx="55" cy="55" r="42"/>
-          <circle class="score-ring-fill"
-            cx="55" cy="55" r="42"
-            stroke="${color}"
-            stroke-dasharray="${circ.toFixed(2)}"
-            stroke-dashoffset="${offset.toFixed(2)}"
-          />
-        </svg>
-        <div class="score-circle-value">
-          <span class="score-number ${scoreClass(score)}">${score}</span>
-          <span class="score-label">/ 100</span>
-        </div>
-      </div>
-      <div class="score-meta">
-        ${analysis.title ? `<div class="score-title">${esc(analysis.title)}</div>` : ''}
-        <div class="score-summary ${scoreClass(score)}" style="font-size:12px;font-weight:600;margin-bottom:6px">${scoreLabel(score)}</div>
-        ${analysis.summary ? `<div class="score-summary">${esc(analysis.summary)}</div>` : ''}
-        ${savedTo ? `<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Saved → ${esc(savedTo)}</div>` : ''}
-      </div>
-    </div>
-  </div>
-
-  <div class="two-col">
-    <div class="col-card strengths">
-      <div class="col-card-title">Strengths</div>
-      <div class="pill-list">${pillList(analysis.strengths ?? [], 'strengths')}</div>
-    </div>
-    <div class="col-card gaps">
-      <div class="col-card-title">Gaps</div>
-      <div class="pill-list">${pillList(analysis.gaps ?? [], 'gaps')}</div>
-    </div>
-  </div>
-
-  ${reqHtml ? `
-  <div class="expand-section">
-    <button class="expand-btn">
-      <span class="chevron">›</span> Key Requirements (${analysis.requirements?.length ?? 0})
-    </button>
-    <div class="expand-body"><div class="pill-list">${reqHtml}</div></div>
-  </div>` : ''}
-
-  ${nthHtml ? `
-  <div class="expand-section">
-    <button class="expand-btn">
-      <span class="chevron">›</span> Nice to Have (${analysis.nice_to_have?.length ?? 0})
-    </button>
-    <div class="expand-body"><div class="pill-list">${nthHtml}</div></div>
-  </div>` : ''}`;
-}
-
-function pillList(items, type) {
-  return items.map(s =>
-    `<div class="pill"><span class="pill-dot"></span><span>${esc(s)}</span></div>`
-  ).join('');
-}
-
-function listItems(items) {
-  return items.map(s =>
-    `<div class="pill"><span class="pill-dot" style="background:var(--text-muted)"></span><span>${esc(s)}</span></div>`
-  ).join('');
-}
-
-function attachExpandHandlers(container) {
-  container.querySelectorAll('.expand-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      btn.classList.toggle('open');
-      btn.nextElementSibling.classList.toggle('open');
-    });
-  });
-}
-
-function esc(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 // ── Browse tab ────────────────────────────────────────────────────────────────
 
 function initBrowseTab() {
-  const btn       = document.getElementById('browse-btn');
-  const urlInput  = document.getElementById('browse-url');
-  const infoEl    = document.getElementById('browse-info');
+  const btn      = document.getElementById('browse-btn');
+  const urlInput = document.getElementById('browse-url');
+  const infoEl   = document.getElementById('browse-info');
   const filtersEl = document.getElementById('browse-filters');
-  const jobsEl    = document.getElementById('browse-jobs');
-  const keyword   = document.getElementById('browse-keyword');
+  const jobsEl   = document.getElementById('browse-jobs');
 
   let allJobs = [];
+
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
 
   btn.addEventListener('click', async () => {
     const url = urlInput.value.trim();
@@ -299,113 +386,131 @@ function initBrowseTab() {
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Loading…';
-    jobsEl.innerHTML = `<div class="empty-state"><span class="spinner"></span></div>`;
+    jobsEl.innerHTML = `<div class="empty-state"><span class="spinner-sm"></span><br><br>Fetching job listings…</div>`;
     infoEl.classList.add('hidden');
     filtersEl.classList.add('hidden');
 
-    const data = await apiPost('/api/jobs', { url });
+    const data = await api.post('/api/jobs', { url });
 
     btn.disabled = false;
     btn.textContent = 'Load Jobs';
 
     if (data.error) {
-      jobsEl.innerHTML = `<div class="empty-state" style="color:var(--danger)">${esc(data.error)}</div>`;
+      jobsEl.innerHTML = `<div class="card" style="border-color:var(--danger-border)"><div style="color:var(--danger);font-size:13px">${esc(data.error)}</div></div>`;
       return;
     }
 
     allJobs = data.jobs ?? [];
 
     if (data.resolvedUrl) {
-      infoEl.className = 'card';
-      infoEl.style.cssText = 'padding:10px 16px;font-size:12px;color:var(--text-dim);margin-bottom:0';
-      infoEl.innerHTML = `Careers page found: <span style="color:var(--text)">${esc(data.resolvedUrl)}</span>`;
+      infoEl.className = 'info-banner';
+      infoEl.innerHTML = `Careers page auto-detected: <strong>${esc(data.resolvedUrl)}</strong>`;
       infoEl.classList.remove('hidden');
     }
 
     if (!allJobs.length) {
-      jobsEl.innerHTML = `<div class="empty-state">No jobs found.</div>`;
+      jobsEl.innerHTML = `<div class="empty-state">No jobs found. Try the direct careers page URL.</div>`;
       return;
     }
 
     filtersEl.classList.remove('hidden');
-    renderJobs(allJobs, jobsEl);
+    renderJobList(allJobs, jobsEl);
   });
 
-  keyword.addEventListener('input', () => {
-    const kw = keyword.value.toLowerCase();
+  document.getElementById('browse-keyword').addEventListener('input', e => {
+    const kw = e.target.value.toLowerCase();
     const filtered = allJobs.filter(j =>
       [j.title, j.location, j.department].join(' ').toLowerCase().includes(kw)
     );
-    renderJobs(filtered, jobsEl);
+    renderJobList(filtered, jobsEl);
   });
 }
 
-function renderJobs(jobs, container) {
+function renderJobList(jobs, container) {
+  const countEl = document.getElementById('browse-count');
+  if (countEl) countEl.textContent = `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`;
+
   if (!jobs.length) {
-    container.innerHTML = `<div class="empty-state">No jobs match the filter.</div>`;
+    container.innerHTML = `<div class="empty-state">No jobs match that filter.</div>`;
     return;
   }
-  container.innerHTML = `<div style="font-size:12px;color:var(--text-dim);margin:12px 0 8px">${jobs.length} job(s)</div>`;
-  const grid = el('div', 'job-grid');
-  jobs.forEach((job, i) => grid.appendChild(buildJobCard(job, i)));
+
+  const grid = document.createElement('div');
+  grid.className = 'job-grid';
+  jobs.forEach(job => grid.appendChild(buildJobCard(job)));
+
+  container.innerHTML = '';
   container.appendChild(grid);
 }
 
-function buildJobCard(job, index) {
-  const card = el('div', 'job-card');
-  card.dataset.url = job.url;
+function buildJobCard(job) {
+  const card = document.createElement('div');
+  card.className = 'job-card';
 
   const tags = [job.location, job.department].filter(Boolean)
     .map(t => `<span class="tag">${esc(t)}</span>`).join('');
 
   card.innerHTML = `
-    <div class="job-card-header">
-      <div>
-        <div class="job-card-title">${esc(job.title)}</div>
-        ${tags ? `<div class="job-card-tags">${tags}</div>` : ''}
-      </div>
-    </div>
+    <div class="job-card-title">${esc(job.title)}</div>
+    ${tags ? `<div class="job-card-tags" style="margin-top:5px">${tags}</div>` : ''}
     <div class="job-card-actions">
-      <button class="btn btn-primary btn-sm analyze-job-btn">Analyze</button>
-      <button class="btn btn-secondary btn-sm copy-url-btn">Copy URL</button>
+      <button class="btn btn-primary btn-sm">Analyze</button>
+      <button class="btn btn-secondary btn-sm">Copy URL</button>
       <a class="btn btn-ghost btn-sm" href="${esc(job.url)}" target="_blank" rel="noopener">Open →</a>
     </div>
     <div class="job-card-result hidden"></div>`;
 
-  card.querySelector('.analyze-job-btn').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const resultEl = card.querySelector('.job-card-result');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
+  const [analyzeBtn, copyBtn] = card.querySelectorAll('button');
+  const resultEl = card.querySelector('.job-card-result');
 
-    const data = await apiPost('/api/analyze-job', { url: job.url });
+  analyzeBtn.addEventListener('click', async () => {
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerHTML = '<span class="spinner"></span>';
 
-    btn.disabled = false;
-    btn.textContent = 'Re-analyze';
+    const data = await api.post('/api/analyze-job', { url: job.url });
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = 'Re-analyze';
 
     if (data.error) {
-      resultEl.innerHTML = `<div style="color:var(--danger);font-size:12px">${esc(data.error)}</div>`;
+      resultEl.innerHTML = `<div style="color:var(--danger);font-size:12px;font-family:var(--mono)">${esc(data.error)}</div>`;
       resultEl.classList.remove('hidden');
       return;
     }
 
-    const analysis = data.analysis;
-    const score    = analysis.match_score ?? 0;
-    const color    = scoreColor(score);
+    const a = data.analysis;
+    const s = a.match_score ?? 0;
+    const c = scoreColor(s);
 
     resultEl.innerHTML = `
       <div class="inline-score">
-        <span class="inline-score-num" style="color:${color}">${score}</span>
+        <span class="inline-score-num" style="color:${c}">${s}</span>
         <div class="inline-score-bar">
-          <div class="inline-score-fill" style="width:${score}%;background:${color}"></div>
+          <div class="inline-score-fill" style="width:0%;background:${c}" id="isf-${job.url.length}"></div>
         </div>
-        <span style="font-size:11px;color:var(--text-dim)">${scoreLabel(score)}</span>
+        <span class="inline-score-label">${scoreLabel(s)}</span>
       </div>
-      ${analysis.summary ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.6">${esc(analysis.summary)}</div>` : ''}`;
+      ${a.summary ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.65;margin-top:4px">${esc(a.summary)}</div>` : ''}
+      ${(a.strengths?.length || a.gaps?.length) ? `
+      <div class="two-col" style="margin-top:10px">
+        <div class="col-card strengths" style="padding:12px">
+          <div class="col-card-header"><span class="col-card-title">Strengths</span><span class="col-card-count">${a.strengths?.length ?? 0}</span></div>
+          <div class="result-items">${buildResultItems(a.strengths, 'strength')}</div>
+        </div>
+        <div class="col-card gaps" style="padding:12px">
+          <div class="col-card-header"><span class="col-card-title">Gaps</span><span class="col-card-count">${a.gaps?.length ?? 0}</span></div>
+          <div class="result-items">${buildResultItems(a.gaps, 'gap')}</div>
+        </div>
+      </div>` : ''}`;
+
     resultEl.classList.remove('hidden');
+    // Animate bar
+    requestAnimationFrame(() => {
+      const bar = resultEl.querySelector('.inline-score-fill');
+      if (bar) requestAnimationFrame(() => { bar.style.width = s + '%'; });
+    });
   });
 
-  card.querySelector('.copy-url-btn').addEventListener('click', () => {
+  copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(job.url).then(() => toast('URL copied'));
   });
 
@@ -423,15 +528,20 @@ function initCoverTab() {
 
   btn.addEventListener('click', async () => {
     if (!company.value.trim() || !role.value.trim()) {
-      toast('Enter a company and role first', 'error');
+      toast('Enter company and role first', 'error');
       return;
     }
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Writing…';
-    resultEl.classList.add('hidden');
+    resultEl.innerHTML = `
+      <div class="card" style="min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+        <span class="spinner-sm"></span>
+        <span style="font-size:12px;color:var(--text-muted)">Gemma is writing your cover letter… 20–40 seconds</span>
+      </div>`;
+    resultEl.classList.remove('hidden');
 
-    const data = await apiPost('/api/cover-letter', {
+    const data = await api.post('/api/cover-letter', {
       company: company.value.trim(),
       role:    role.value.trim(),
       skills:  skills.value.trim(),
@@ -440,12 +550,19 @@ function initCoverTab() {
     btn.disabled = false;
     btn.textContent = 'Generate Cover Letter';
 
-    if (data.error) { toast(data.error, 'error'); return; }
+    if (data.error) {
+      toast(data.error, 'error');
+      resultEl.classList.add('hidden');
+      return;
+    }
 
     resultEl.innerHTML = `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <div style="font-size:14px;font-weight:600">${esc(role.value)} — ${esc(company.value)}</div>
+      <div class="card result-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:14px;font-weight:600">${esc(role.value)}</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px">${esc(company.value)}</div>
+          </div>
           <div style="display:flex;gap:8px">
             <button class="btn btn-secondary btn-sm" id="copy-cover-btn">Copy</button>
             <button class="btn btn-secondary btn-sm" id="dl-cover-btn">Download</button>
@@ -453,16 +570,13 @@ function initCoverTab() {
         </div>
         <div class="cover-letter-box">${esc(data.letter)}</div>
       </div>`;
-    resultEl.classList.remove('hidden');
 
     document.getElementById('copy-cover-btn').addEventListener('click', () => {
       navigator.clipboard.writeText(data.letter).then(() => toast('Copied to clipboard'));
     });
-
     document.getElementById('dl-cover-btn').addEventListener('click', () => {
-      const blob = new Blob([data.letter], { type: 'text/plain' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
+      a.href = URL.createObjectURL(new Blob([data.letter], { type: 'text/plain' }));
       a.download = `cover_letter_${company.value.toLowerCase().replace(/\s+/g, '_')}.txt`;
       a.click();
     });
@@ -486,20 +600,17 @@ function initDemoTab() {
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Opening Chrome…';
-
-    statusEl.innerHTML = `<div style="font-size:12px;color:var(--text-dim)">Opening Chrome on your screen…</div>`;
+    statusEl.innerHTML = `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)"><span class="spinner-sm"></span> Launching Playwright — watch your screen…</div>`;
     statusEl.classList.remove('hidden');
 
-    const data = await apiPost('/api/autofill', { name, email, phone, linkedin, mode });
+    const data = await api.post('/api/autofill', { name, email, phone, linkedin, mode });
 
     btn.disabled = false;
     btn.textContent = 'Run Demo →';
 
-    if (data.error) {
-      statusEl.innerHTML = `<div style="font-size:12px;color:var(--danger)">${esc(data.error)}</div>`;
-    } else {
-      statusEl.innerHTML = `<div style="font-size:12px;color:var(--success)">Demo complete — application submitted!</div>`;
-    }
+    statusEl.innerHTML = data.error
+      ? `<div style="font-size:12px;color:var(--danger)">${esc(data.error)}</div>`
+      : `<div style="font-size:12px;color:var(--success);display:flex;align-items:center;gap:6px">${ICON_CHECK} Demo complete — application submitted!</div>`;
   });
 }
 
@@ -507,55 +618,48 @@ function initDemoTab() {
 
 async function loadHistory() {
   const container = document.getElementById('history-content');
-  container.innerHTML = `<div class="empty-state"><span class="spinner"></span></div>`;
+  container.innerHTML = `<div class="empty-state"><span class="spinner-sm"></span></div>`;
 
-  const history = await apiGet('/api/history');
+  const history = await api.get('/api/history');
+  const rows = [...history].reverse();
 
-  if (!history.length) {
-    container.innerHTML = `<div class="empty-state">No jobs analyzed yet. Use the Analyze tab to get started.</div>`;
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No jobs analyzed yet.<br>Use the Analyze tab to get started.</div>`;
     return;
   }
 
-  const rows = [...history].reverse();
-
-  const actions = el('div', '', `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <span style="font-size:12px;color:var(--text-dim)">${rows.length} job(s) analyzed</span>
-      <button class="btn btn-ghost btn-sm" id="clear-history-btn" style="color:var(--danger)">Clear history</button>
-    </div>`);
-
-  const wrap = el('div', 'table-wrap');
-  const table = el('table', '');
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Job Title</th>
-        <th>Score</th>
-        <th>URL</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rows.map(e => {
-        const score = e.score;
-        const color = typeof score === 'number' ? scoreColor(score) : 'var(--text-muted)';
-        return `<tr>
-          <td>${esc(e.date ?? '')}</td>
-          <td style="color:var(--text);font-family:var(--font)">${esc(e.title ?? '')}</td>
-          <td><span style="color:${color};font-weight:600">${score ?? '—'}</span></td>
-          <td><a href="${esc(e.url ?? '')}" target="_blank" rel="noopener" style="color:var(--primary)">${esc((e.url ?? '').slice(0, 50))}…</a></td>
-        </tr>`;
-      }).join('')}
-    </tbody>`;
-
-  wrap.appendChild(table);
-  container.innerHTML = '';
-  container.appendChild(actions);
-  container.appendChild(wrap);
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <span style="font-size:12px;color:var(--text-dim)">${rows.length} job${rows.length !== 1 ? 's' : ''} analyzed</span>
+      <button class="btn btn-danger-ghost btn-sm" id="clear-history-btn">Clear history</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Job Title</th><th>Score</th><th>URL</th></tr>
+        </thead>
+        <tbody>
+          ${rows.map(e => {
+            const s = e.score;
+            const c = typeof s === 'number' ? scoreColor(s) : 'var(--text-muted)';
+            const label = typeof s === 'number' ? scoreLabel(s) : '—';
+            return `<tr>
+              <td style="white-space:nowrap;font-family:var(--mono)">${esc(e.date ?? '')}</td>
+              <td style="color:var(--text);font-family:var(--font);font-size:13px">${esc(e.title ?? '')}</td>
+              <td>
+                <span style="color:${c};font-weight:700;font-family:var(--mono)">${s ?? '—'}</span>
+                <span style="color:var(--text-muted);font-size:11px;margin-left:5px">${label}</span>
+              </td>
+              <td><a href="${esc(e.url ?? '')}" target="_blank" rel="noopener" style="color:var(--primary);font-size:11px;word-break:break-all">${esc((e.url ?? '').replace(/^https?:\/\//, '').slice(0, 60))}…</a></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
 
   document.getElementById('clear-history-btn').addEventListener('click', async () => {
     if (!confirm('Clear all history?')) return;
-    await apiDelete('/api/history');
+    await api.delete('/api/history');
     loadHistory();
   });
 }
@@ -564,69 +668,78 @@ async function loadHistory() {
 
 async function loadObservability() {
   const container = document.getElementById('observe-content');
-  container.innerHTML = `<div class="empty-state"><span class="spinner"></span></div>`;
+  container.innerHTML = `<div class="empty-state"><span class="spinner-sm"></span></div>`;
 
   const [timeline, reliability, alerts] = await Promise.all([
-    apiGet('/api/observability/timeline'),
-    apiGet('/api/observability/reliability'),
-    apiGet('/api/observability/alerts'),
+    api.get('/api/observability/timeline'),
+    api.get('/api/observability/reliability'),
+    api.get('/api/observability/alerts'),
   ]);
 
   container.innerHTML = '';
 
-  // Alerts
   if (alerts.length) {
-    const title = el('div', 'section-title', `⚠ ${alerts.length} Selector Drift Alert(s)`);
-    title.style.color = 'var(--warning)';
-    container.appendChild(title);
+    const banner = document.createElement('div');
+    banner.className = 'alert-banner';
+    banner.innerHTML = `⚠ ${alerts.length} selector drift alert${alerts.length !== 1 ? 's' : ''} detected`;
+    container.appendChild(banner);
 
-    const wrap = el('div', 'table-wrap');
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
     wrap.innerHTML = `<table>
-      <thead><tr><th>Severity</th><th>Context</th><th>Selector</th><th>Recent</th><th>Overall</th><th>Drop</th></tr></thead>
+      <thead><tr><th>Severity</th><th>Context</th><th>Selector</th><th>Recent %</th><th>Overall %</th><th>Drop</th></tr></thead>
       <tbody>${alerts.map(a => `<tr>
-        <td class="alert-${a.severity}">${a.severity}</td>
+        <td style="color:${a.severity === 'high' ? 'var(--danger)' : 'var(--warning)'}">● ${a.severity}</td>
         <td>${esc(a.context)}</td>
-        <td>${esc(a.selector)}</td>
+        <td style="font-family:var(--mono);font-size:11px">${esc(a.selector)}</td>
         <td>${a.recent_rate}%</td>
         <td>${a.overall_rate}%</td>
-        <td class="alert-${a.severity}">${a.drop}pp</td>
+        <td style="color:${a.severity === 'high' ? 'var(--danger)' : 'var(--warning)'}">−${a.drop}pp</td>
       </tr>`).join('')}</tbody>
     </table>`;
     container.appendChild(wrap);
   }
 
-  // Timeline
-  container.appendChild(el('div', 'section-title', 'Run Timeline'));
+  const t1 = document.createElement('div');
+  t1.className = 'section-title';
+  t1.textContent = 'Run Timeline';
+  container.appendChild(t1);
+
   if (!timeline.length) {
-    container.appendChild(el('div', 'empty-state', 'No runs yet. Analyze a job first.'));
+    container.appendChild(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: 'No runs yet. Analyze a job first.' }));
   } else {
-    const wrap = el('div', 'table-wrap');
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
     wrap.innerHTML = `<table>
-      <thead><tr><th>Time</th><th>Run</th><th>Step</th><th>Tool</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
+      <thead><tr><th>Time</th><th>Run ID</th><th>Step</th><th>Tool</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
       <tbody>${timeline.map(r => `<tr>
-        <td>${esc(r.time ?? '')}</td>
-        <td>${esc(r.run_id ?? '')}</td>
+        <td style="white-space:nowrap">${esc(r.time ?? '')}</td>
+        <td style="font-family:var(--mono)">${esc(r.run_id ?? '')}</td>
         <td>${esc(r.step ?? '')}</td>
-        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.tool_call ?? '')}</td>
+        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11px">${esc(r.tool_call ?? '')}</td>
         <td>${r.latency_ms != null ? Math.round(r.latency_ms) + ' ms' : '—'}</td>
         <td>${r.total_tokens ?? '—'}</td>
-        <td style="color:${r.error ? 'var(--danger)' : 'var(--success)'}">${r.error ? '✗ err' : '✓'}</td>
+        <td style="color:${r.error ? 'var(--danger)' : 'var(--success)'}">${r.error ? '✗' : '✓'}</td>
       </tr>`).join('')}</tbody>
     </table>`;
     container.appendChild(wrap);
   }
 
-  // Selector reliability
-  container.appendChild(el('div', 'section-title', 'Selector Reliability'));
+  const t2 = document.createElement('div');
+  t2.className = 'section-title';
+  t2.textContent = 'Selector Reliability';
+  container.appendChild(t2);
+
   if (!reliability.length) {
-    container.appendChild(el('div', 'empty-state', 'No selector data yet.'));
+    container.appendChild(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: 'No selector data yet.' }));
   } else {
-    const wrap = el('div', 'table-wrap');
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
     wrap.innerHTML = `<table>
-      <thead><tr><th>Context</th><th>Selector</th><th>Attempts</th><th>Recent %</th><th>Overall %</th><th>Avg ms</th></tr></thead>
+      <thead><tr><th>Context</th><th>Selector</th><th>Attempts</th><th>Recent</th><th>Overall</th><th>Avg ms</th></tr></thead>
       <tbody>${reliability.map(r => `<tr>
         <td>${esc(r.context)}</td>
-        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(r.selector)}</td>
+        <td style="font-family:var(--mono);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.selector)}</td>
         <td>${r.attempts}</td>
         <td style="color:${r.recent_rate >= 80 ? 'var(--success)' : 'var(--warning)'}">${r.recent_rate}%</td>
         <td>${r.overall_rate}%</td>
