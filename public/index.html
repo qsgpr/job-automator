@@ -18,89 +18,76 @@
       <span class="logo-text">Job Automator</span>
     </div>
 
+    <!-- Profile picker -->
+    <div class="profile-section">
+      <div class="profile-section-label">Profile</div>
+      <select id="user-select" class="user-select"></select>
+      <button class="btn btn-ghost btn-sm" id="add-user-btn">+ New</button>
+    </div>
+
     <nav class="nav">
-      <button class="nav-btn active" data-tab="analyze">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        Analyze Job
+      <button class="nav-btn active" data-tab="feed">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+        Job Feed
       </button>
       <button class="nav-btn" data-tab="browse">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        Browse Jobs
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Search
       </button>
       <button class="nav-btn" data-tab="cover">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Cover Letter
       </button>
-      <button class="nav-btn" data-tab="demo">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        Auto-Fill Demo
+      <button class="nav-btn" data-tab="profile">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Profile
       </button>
       <button class="nav-btn" data-tab="history">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         History
       </button>
-      <button class="nav-btn" data-tab="observe">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Observability
-      </button>
       <button class="nav-btn" data-tab="resume">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-        Resume Builder
+        Resume
+      </button>
+      <button class="nav-btn" data-tab="observe">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14M12 2v2m0 16v2m10-10h-2M4 12H2"/></svg>
+        Admin
+      </button>
+      <button class="nav-btn" data-tab="demo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Auto-Fill
       </button>
     </nav>
 
-    <div class="resume-panel">
-      <div class="resume-panel-header">
-        <span class="resume-panel-title">Resume</span>
-        <span class="resume-badge" id="resume-badge">not set</span>
-      </div>
-      <textarea
-        id="resume-input"
-        class="resume-textarea"
-        placeholder="Paste your resume here…&#10;&#10;The analyzer will compare every job against this text."
-        spellcheck="false"
-      ></textarea>
-      <button class="btn btn-secondary btn-sm" id="save-resume-btn">Save</button>
-    </div>
   </aside>
 
   <!-- ── Main ─────────────────────────────────────────────────────────────── -->
   <main class="main">
 
-    <!-- Analyze tab -->
-    <section class="tab-panel active" id="tab-analyze">
-      <div class="panel-header">
-        <h1 class="panel-title">Analyze Job</h1>
-        <p class="panel-sub">Paste a job URL — Playwright scrapes it, Gemma scores your fit.</p>
-      </div>
-
-      <div class="card">
-        <div class="form-row">
-          <input id="analyze-url" class="input" type="url" placeholder="https://boards.greenhouse.io/company/jobs/12345" />
-          <label class="checkbox-label">
-            <input type="checkbox" id="analyze-save" /> Save report
-          </label>
-          <button class="btn btn-primary" id="analyze-btn">Analyze</button>
-        </div>
-      </div>
-
-      <div id="analyze-log" class="progress-log hidden"></div>
-      <div id="analyze-result" class="hidden"></div>
-    </section>
-
-    <!-- Browse tab -->
+    <!-- Search tab (unified browse + analyze) -->
     <section class="tab-panel" id="tab-browse">
       <div class="panel-header">
-        <h1 class="panel-title">Browse Jobs</h1>
-        <p class="panel-sub">Enter a careers page URL — returns all open roles with one-click analysis.</p>
+        <h1 class="panel-title">Search</h1>
+        <p class="panel-sub">Find a company's careers page or paste any job URL to browse listings or analyze your fit.</p>
       </div>
 
       <div class="card">
         <div class="form-row">
-          <input id="browse-url" class="input" type="url" placeholder="https://company.com/careers" />
-          <button class="btn btn-primary" id="browse-btn">Load Jobs</button>
+          <input id="browse-search" class="input" placeholder="Company name, e.g. Stripe, Bold, Notion…" />
+          <button class="btn btn-primary" id="browse-search-btn">Search</button>
+        </div>
+        <div id="browse-suggestions" class="hidden"></div>
+        <div class="browse-divider"><span>or paste URL directly</span></div>
+        <div class="form-row">
+          <input id="browse-url" class="input" type="url" placeholder="https://company.com/careers  or  /jobs/12345" />
+          <button class="btn btn-secondary" id="browse-btn">Browse careers</button>
+          <button class="btn btn-primary" id="browse-analyze-btn">Analyze role</button>
         </div>
       </div>
+
+      <div id="browse-analyze-log" class="progress-log hidden"></div>
+      <div id="browse-analyze-result" class="hidden"></div>
 
       <div id="browse-info" class="hidden"></div>
       <div id="browse-filters" class="hidden">
@@ -240,17 +227,244 @@
       </div>
     </section>
 
-    <!-- Observability tab -->
+    <!-- Admin tab -->
     <section class="tab-panel" id="tab-observe">
       <div class="panel-header">
-        <h1 class="panel-title">Observability</h1>
-        <p class="panel-sub">Per-run traces, LLM latency, token usage, and selector drift alerts.</p>
+        <h1 class="panel-title">Admin</h1>
+        <p class="panel-sub">Job sites, per-run traces, LLM latency, token usage, and selector drift alerts.</p>
       </div>
       <div id="observe-content"></div>
     </section>
 
+    <!-- Profile tab -->
+    <section class="tab-panel" id="tab-profile">
+      <div class="panel-header">
+        <h1 class="panel-title">Profile</h1>
+        <p class="panel-sub">Edit your contact info, resume, and job-search preferences.</p>
+      </div>
+
+      <!-- Contact info -->
+      <div class="card" style="margin-bottom:12px">
+        <div class="section-title" style="margin-top:0">Contact</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="label">Name</label>
+            <input id="profile-name" class="input" placeholder="Your full name" />
+          </div>
+          <div class="form-group">
+            <label class="label">Email</label>
+            <input id="profile-email" class="input" type="email" placeholder="you@example.com" />
+          </div>
+          <div class="form-group">
+            <label class="label">Phone <span class="label-hint">used in auto-apply</span></label>
+            <input id="profile-phone" class="input" type="tel" placeholder="+1 555-0100" />
+          </div>
+          <div class="form-group">
+            <label class="label">LinkedIn <span class="label-hint">used in auto-apply</span></label>
+            <input id="profile-linkedin" class="input" placeholder="linkedin.com/in/yourname" />
+          </div>
+        </div>
+
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-soft)">
+          <div class="label" style="margin-bottom:10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Address</div>
+          <div class="form-group" style="margin-bottom:10px">
+            <label class="label">Street</label>
+            <input id="profile-street" class="input" placeholder="123 Main St" />
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="label">City</label>
+              <input id="profile-city" class="input" placeholder="San Juan" />
+            </div>
+            <div class="form-group">
+              <label class="label">State / Province</label>
+              <input id="profile-state" class="input" placeholder="PR" />
+            </div>
+            <div class="form-group">
+              <label class="label">ZIP / Postal</label>
+              <input id="profile-zip" class="input" placeholder="00901" />
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px">
+          <button class="btn btn-primary btn-sm" id="profile-save-contact-btn">Save Contact</button>
+          <span id="profile-contact-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Application facts -->
+      <div class="card" style="margin-bottom:12px">
+        <div class="section-title" style="margin-top:0">Application Info <span class="label-hint">auto-fills job application questions</span></div>
+
+        <div class="form-grid" style="margin-bottom:14px">
+          <div class="form-group">
+            <label class="label">Work authorized in US?</label>
+            <div class="wizard-radio-group" id="profile-work-auth"></div>
+          </div>
+          <div class="form-group">
+            <label class="label">Requires visa sponsorship?</label>
+            <div class="wizard-radio-group" id="profile-sponsorship"></div>
+          </div>
+          <div class="form-group">
+            <label class="label">Available start date</label>
+            <input id="profile-available-start" class="input" placeholder="Immediately or 2025-09-01" />
+          </div>
+          <div class="form-group">
+            <label class="label">Years of experience as Software Engineer</label>
+            <div class="wizard-radio-group" id="profile-years-exp"></div>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="label">TypeScript / JavaScript proficiency</label>
+          <div class="wizard-radio-group" id="profile-ts-proficiency"></div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="label">LLM / AI frameworks you've used in production <span class="label-hint">select all that apply</span></label>
+          <div class="dept-grid" id="profile-llm-frameworks"></div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="label">Additional info <span class="label-hint">shown on "anything else to share?" fields</span></label>
+          <textarea id="profile-additional-info" class="input" rows="3"
+            placeholder="E.g. I'm based in Puerto Rico, open to full relocation…" style="resize:vertical"></textarea>
+        </div>
+
+        <div>
+          <button class="btn btn-primary btn-sm" id="profile-save-appinfo-btn">Save Application Info</button>
+          <span id="profile-appinfo-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Resume -->
+      <div class="card" style="margin-bottom:12px">
+        <div class="section-title" style="margin-top:0">Resume</div>
+        <textarea id="profile-resume" class="resume-textarea" style="height:220px"
+          placeholder="Paste your resume text here…" spellcheck="false"></textarea>
+        <div style="margin-top:10px">
+          <button class="btn btn-primary btn-sm" id="profile-save-resume-btn">Save Resume</button>
+          <span id="profile-resume-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Preferences -->
+      <div class="card">
+        <div class="section-title" style="margin-top:0">Job Preferences</div>
+
+        <div class="form-group">
+          <label class="label">Work type</label>
+          <div class="wizard-radio-group" id="profile-work-type"></div>
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-work-type-mode"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="label">Experience level</label>
+          <div class="wizard-radio-group" id="profile-exp-level"></div>
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-exp-level-mode"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="label">Preferred location <span class="label-hint">leave blank for any</span></label>
+          <input id="profile-location" class="input" placeholder="Austin, TX" />
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-location-mode"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="label">Department interests <span class="label-hint">leave all unchecked for any</span></label>
+          <div class="dept-grid" id="profile-departments"></div>
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-departments-mode"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="label">Minimum salary</label>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <span style="font-size:14px;color:var(--text-dim)">$</span>
+            <input id="profile-salary" class="input" type="number" min="0" step="5"
+              placeholder="80" style="max-width:100px" />
+            <span style="font-size:13px;color:var(--text-dim)">k / year</span>
+          </div>
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-salary-mode"></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.6">
+            Jobs with no posted salary are always shown regardless of this setting.
+          </div>
+        </div>
+
+        <div style="margin-top:18px">
+          <button class="btn btn-primary btn-sm" id="profile-save-prefs-btn">Save Preferences</button>
+          <span id="profile-prefs-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Job Feed tab -->
+    <section class="tab-panel active" id="tab-feed">
+      <div class="panel-header">
+        <h1 class="panel-title">Job Feed</h1>
+        <p class="panel-sub">Scans all active job sites and scores matches against your profile.</p>
+      </div>
+
+      <div class="card">
+        <div class="form-row">
+          <div id="feed-user-info" style="flex:1;font-size:13px;color:var(--text-dim)"></div>
+          <button class="btn btn-primary" id="feed-scan-btn">Start Scan</button>
+        </div>
+        <div id="feed-site-count" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
+      </div>
+
+      <div id="feed-progress" class="hidden" style="margin-top:12px">
+        <div class="feed-progress-bar"><div id="feed-progress-fill" style="height:100%;border-radius:2px;background:var(--primary);width:0%;transition:width 0.4s ease"></div></div>
+        <div id="feed-progress-label" style="font-size:12px;color:var(--text-dim);margin-top:6px"></div>
+      </div>
+
+      <div id="feed-summary" class="hidden" style="margin-top:12px"></div>
+
+      <div id="feed-sort-bar" class="hidden">
+        <span class="sort-label">Sort:</span>
+        <button class="sort-btn active" data-sort="score">Best Match</button>
+        <button class="sort-btn" data-sort="recent">Recent</button>
+        <button class="sort-btn" data-sort="title">A–Z</button>
+        <span id="feed-result-count" style="margin-left:auto;font-size:11px;color:var(--text-muted)"></span>
+      </div>
+
+      <div id="feed-results" style="margin-top:8px"></div>
+    </section>
+
   </main>
 </div>
+
+<!-- Apply progress modal -->
+<div id="apply-modal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:480px">
+    <div style="font-size:16px;font-weight:700;margin-bottom:16px">Auto-Apply in Progress</div>
+    <div id="apply-progress-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+    <div id="apply-paused-msg" class="hidden" style="font-size:13px;color:var(--success);font-weight:600;margin-bottom:12px"></div>
+    <div id="apply-error-msg"  class="hidden" style="font-size:12px;color:var(--danger);margin-bottom:12px"></div>
+    <div class="wizard-footer" style="margin-top:0;padding-top:12px">
+      <div style="font-size:11px;color:var(--text-muted)" id="apply-field-count"></div>
+      <button class="btn btn-ghost btn-sm" id="apply-close-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Onboarding wizard modal -->
+<div id="onboarding-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="wizard-steps" id="wizard-dots"></div>
+    <div id="wizard-content"></div>
+    <div class="wizard-footer">
+      <button class="btn btn-ghost btn-sm" id="wizard-back-btn">Back</button>
+      <button class="btn btn-primary" id="wizard-next-btn">Next →</button>
+    </div>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>

@@ -641,6 +641,85 @@ body {
   margin-top: 6px;
 }
 
+/* ── Browse search suggestions ─────────────────────────────────────────────── */
+.browse-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.browse-divider::before,
+.browse-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+#browse-suggestions {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggestion-searching,
+.suggestion-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.suggestion-item {
+  width: 100%;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.suggestion-item:hover {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+.suggestion-item.verified {
+  border-color: var(--success-border);
+  background: var(--success-dim);
+}
+.suggestion-item.verified:hover { border-color: var(--success); }
+.suggestion-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.suggestion-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.suggestion-url {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Job cards (Browse tab) ────────────────────────────────────────────────── */
 .filter-bar {
   display: flex;
@@ -842,6 +921,203 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 
 .divider { height: 1px; background: var(--border-soft); margin: 20px 0; }
+
+/* ── Onboarding modal ─────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px 36px;
+  width: 540px; max-width: 96vw; max-height: 90vh;
+  overflow-y: auto;
+}
+.wizard-steps { display: flex; gap: 6px; margin-bottom: 28px; }
+.wizard-step-dot {
+  flex: 1; height: 3px; border-radius: 2px;
+  background: var(--border); transition: background 0.3s;
+}
+.wizard-step-dot.done, .wizard-step-dot.active { background: var(--primary); }
+.wizard-title {
+  font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 6px;
+}
+.wizard-sub {
+  font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.5;
+}
+.wizard-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border-soft);
+}
+
+/* ── Profile picker (sidebar) ─────────────────────────────────────────────── */
+.profile-section {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.profile-section-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); width: 100%;
+}
+.user-select {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  font-family: var(--font); font-size: 12px; padding: 5px 8px;
+  outline: none; cursor: pointer;
+}
+.user-select:focus { border-color: var(--primary); }
+
+/* ── Job Feed tab ─────────────────────────────────────────────────────────── */
+/* ── Feed sort bar ────────────────────────────────────────────────────────── */
+#feed-sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+}
+.sort-label { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.sort-btn {
+  font-size: 11px; font-weight: 500;
+  padding: 4px 12px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text-dim); cursor: pointer; transition: all 0.12s;
+}
+.sort-btn:hover { border-color: var(--primary); color: var(--text); }
+.sort-btn.active {
+  background: var(--primary-dim); border-color: var(--primary); color: #c4b5fd;
+}
+
+.feed-progress-bar {
+  height: 3px; background: var(--border);
+  border-radius: 2px; overflow: hidden; margin: 8px 0 4px;
+}
+.feed-job-card {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 16px 20px;
+  margin-bottom: 8px; animation: revealUp 0.25s ease;
+}
+.feed-job-card.has-warnings { border-color: rgba(245,158,11,0.35); }
+.feed-site-label {
+  font-size: 10px; color: var(--text-muted);
+  font-family: var(--mono); margin-bottom: 5px;
+}
+.cache-badge {
+  display: inline-block; font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 10px; margin-left: 6px;
+  background: var(--surface-3); color: var(--text-muted);
+  border: 1px solid var(--border-soft); vertical-align: middle;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.warn-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px;
+  background: rgba(245,158,11,0.12); color: var(--warning);
+  border: 1px solid rgba(245,158,11,0.25); margin: 2px 4px 2px 0;
+}
+
+/* ── Hard/soft mode toggle ────────────────────────────────────────────────── */
+.mode-toggle { display: flex; gap: 4px; margin-top: 6px; }
+.mode-btn {
+  font-size: 11px; padding: 3px 12px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text-muted); cursor: pointer; transition: all 0.12s;
+}
+.mode-btn.active { background: var(--primary-dim); border-color: var(--primary); color: #c4b5fd; }
+.mode-btn.active.hard { background: var(--danger-dim); border-color: var(--danger-border); color: var(--danger); }
+
+/* ── Department checkbox grid ─────────────────────────────────────────────── */
+.dept-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px;
+}
+.dept-check {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-dim); cursor: pointer; padding: 2px 0;
+}
+.dept-check input { accent-color: var(--primary); cursor: pointer; width: 14px; height: 14px; }
+
+/* ── Wizard form helpers ──────────────────────────────────────────────────── */
+.wizard-radio-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.wizard-radio-opt {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-dim); cursor: pointer;
+  padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg); transition: all 0.12s;
+}
+.wizard-radio-opt:has(input:checked) {
+  border-color: var(--primary); background: var(--primary-dim); color: #c4b5fd;
+}
+.wizard-radio-opt input { display: none; }
+.mode-label {
+  font-size: 11px; color: var(--text-muted); margin-top: 10px; margin-bottom: 2px;
+}
+
+/* ── Sites admin table ────────────────────────────────────────────────────── */
+.site-toggle {
+  font-size: 11px; padding: 2px 10px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
+  transition: all 0.12s;
+}
+.site-toggle.active {
+  background: var(--success-dim); border-color: var(--success-border); color: var(--success);
+}
+
+/* ── JD Input cards (Observability tab) ───────────────────────────────────── */
+.jd-input-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.jd-input-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.jd-input-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.jd-input-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-family: var(--mono);
+}
+.jd-input-meta a { color: var(--primary); text-decoration: none; }
+.jd-input-meta a:hover { text-decoration: underline; }
+.jd-score {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.jd-toggle-btn { margin-left: auto; white-space: nowrap; }
+.jd-input-body {
+  margin: 0;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg);
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+  line-height: 1.6;
+}
 
 /* ── Drop zone ─────────────────────────────────────────────────────────────── */
 .drop-zone {

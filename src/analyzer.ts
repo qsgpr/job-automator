@@ -3,6 +3,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { readFile } from 'node:fs/promises';
 import type { Analysis, LlmAttemptMetric, TokenUsage, ContactInfo } from './types.js';
+import { recordAnalysisInput } from './observability.js';
 
 const ANALYSIS_PROMPT = ChatPromptTemplate.fromMessages([
   ['system', `You are a technical recruiter and career coach.
@@ -36,23 +37,34 @@ function extractTokenUsage(response: Record<string, unknown>): TokenUsage {
 export async function analyzeWithMetrics(
   jobDescription: string,
   resume: string,
+  url?: string,
 ): Promise<[Analysis, LlmAttemptMetric[]]> {
   const parser = new JsonOutputParser<Analysis>();
-  const messages = await ANALYSIS_PROMPT.formatMessages({ job_description: jobDescription, resume });
   const attempts: LlmAttemptMetric[] = [];
+
+  // After cleanJobText the JD is much leaner; 6 k chars keeps even verbose
+  // postings intact while staying well within the 16 k numCtx window.
+  const jd      = jobDescription.slice(0, 6000);
+  const resumeT = resume.slice(0, 3000);
+
+  const fmtMessages = await ANALYSIS_PROMPT.formatMessages({ job_description: jd, resume: resumeT });
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const temperature = attempt === 0 ? 0 : 0.1;
-    const llm = new ChatOllama({ model: 'gemma4:26b', temperature });
+    // numCtx: default is often too small; think: false disables Gemma 4's
+    // reasoning tokens — @langchain/ollama puts `thinking` into response.content,
+    // which breaks JSON parsing.
+    const llm = new ChatOllama({ model: 'gemma4:26b', temperature, numCtx: 16384, think: false });
     const t0 = performance.now();
 
     try {
-      const response = await llm.invoke(messages);
+      const response = await llm.invoke(fmtMessages);
       const latency_ms = performance.now() - t0;
       const token_usage = extractTokenUsage(response as unknown as Record<string, unknown>);
       const parsed = await parser.parse(response.content as string);
 
       attempts.push({ attempt: attempt + 1, tool_call: 'ollama:gemma4:26b', temperature, latency_ms, token_usage, error: null, retry_of: attempt > 0 ? attempt : null });
+      recordAnalysisInput({ url, title: parsed.title, score: parsed.match_score, jdSent: jd });
       return [parsed, attempts];
     } catch (e) {
       const latency_ms = performance.now() - t0;
@@ -74,8 +86,8 @@ export async function analyzeWithMetrics(
   throw new Error('Analysis failed unexpectedly');
 }
 
-export async function analyze(jobDescription: string, resume: string): Promise<Analysis> {
-  const [result] = await analyzeWithMetrics(jobDescription, resume);
+export async function analyze(jobDescription: string, resume: string, url?: string): Promise<Analysis> {
+  const [result] = await analyzeWithMetrics(jobDescription, resume, url);
   return result;
 }
 
@@ -125,7 +137,7 @@ Return ONLY valid JSON with exactly these fields (use empty string if not found)
 ]);
 
 export async function parseResume(resumeText: string): Promise<ContactInfo> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
   const parser = new JsonOutputParser<ContactInfo>();
   const chain = RESUME_PARSE_PROMPT.pipe(llm).pipe(parser);
   try {
@@ -154,7 +166,7 @@ export async function generateCoverLetter(
   resume: string,
   skills = '',
 ): Promise<string> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0.3 });
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0.3, think: false });
   const chain = COVER_LETTER_PROMPT.pipe(llm);
   const result = await chain.invoke({ company, role, resume, skills: skills || 'relevant technical experience' });
   return (result.content as string).trim();
@@ -192,7 +204,7 @@ Rules:
 
 export async function mergeResumes(texts: string[]): Promise<string> {
   if (texts.length === 1) return texts[0].trim();
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
   const chain = CREATE_MASTER_PROMPT.pipe(llm);
   const resumes = texts.map((t, i) => `=== VERSION ${i + 1} ===\n${t.trim()}`).join('\n\n');
   const result = await chain.invoke({ resumes, count: texts.length });
@@ -200,7 +212,7 @@ export async function mergeResumes(texts: string[]): Promise<string> {
 }
 
 export async function diffResumes(master: string, newTexts: string[]): Promise<string> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
   const chain = DIFF_PROMPT.pipe(llm);
   const files = newTexts.map((t, i) => `=== FILE ${i + 1} ===\n${t.trim()}`).join('\n\n');
   const result = await chain.invoke({ master, files, divider: '─'.repeat(40) });

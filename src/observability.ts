@@ -9,6 +9,63 @@ const DB_PATH = join(__dirname, '..', 'observability.db');
 const db = new Database(DB_PATH);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    email       TEXT NOT NULL DEFAULT '',
+    resume_text TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    work_type      TEXT NOT NULL DEFAULT 'any',
+    work_type_mode TEXT NOT NULL DEFAULT 'soft',
+    departments    TEXT NOT NULL DEFAULT '[]',
+    salary_min     INTEGER,
+    salary_mode    TEXT NOT NULL DEFAULT 'soft',
+    exp_level      TEXT NOT NULL DEFAULT 'any',
+    exp_level_mode TEXT NOT NULL DEFAULT 'soft',
+    location_pref  TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS job_sites (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT NOT NULL,
+    url      TEXT NOT NULL UNIQUE,
+    notes    TEXT NOT NULL DEFAULT '',
+    active   INTEGER NOT NULL DEFAULT 1,
+    added_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS feed_jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL,
+    site_id        INTEGER NOT NULL,
+    job_url        TEXT NOT NULL,
+    job_title      TEXT NOT NULL DEFAULT '',
+    location       TEXT NOT NULL DEFAULT '',
+    department     TEXT NOT NULL DEFAULT '',
+    analysis_json  TEXT,
+    match_score    INTEGER,
+    filter_result  TEXT NOT NULL DEFAULT 'pass',
+    warnings_json  TEXT NOT NULL DEFAULT '[]',
+    first_seen     TEXT NOT NULL,
+    last_seen      TEXT NOT NULL,
+    UNIQUE(user_id, job_url)
+  );
+
+  CREATE TABLE IF NOT EXISTS analysis_inputs (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    time      TEXT NOT NULL,
+    url       TEXT,
+    title     TEXT,
+    score     INTEGER,
+    jd_length INTEGER NOT NULL,
+    jd_sent   TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS runs (
     run_id        TEXT PRIMARY KEY,
     run_type      TEXT NOT NULL,
@@ -203,3 +260,47 @@ export function getSelectorAlerts(dropThreshold = 15): SelectorAlert[] {
   }
   return alerts.sort((a, b) => b.drop - a.drop);
 }
+
+export interface AnalysisInputParams {
+  url?: string;
+  title?: string;
+  score?: number;
+  jdSent: string;
+}
+
+export function recordAnalysisInput(params: AnalysisInputParams): void {
+  const { url, title, score, jdSent } = params;
+  db.prepare(
+    `INSERT INTO analysis_inputs (time, url, title, score, jd_length, jd_sent)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(now(), url ?? null, title ?? null, score ?? null, jdSent.length, jdSent);
+}
+
+export function getAnalysisInputs(limit = 20): Record<string, unknown>[] {
+  return db.prepare(
+    `SELECT id, time, url, title, score, jd_length, jd_sent
+     FROM analysis_inputs ORDER BY id DESC LIMIT ?`
+  ).all(limit) as Record<string, unknown>[];
+}
+
+// Safe migrations — these are no-ops if the column already exists
+try { db.exec(`ALTER TABLE users ADD COLUMN phone    TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN linkedin TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE user_preferences ADD COLUMN departments_mode TEXT NOT NULL DEFAULT 'soft'`); } catch {}
+try { db.exec(`ALTER TABLE job_sites ADD COLUMN ats_type TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE job_sites ADD COLUMN ats_slug TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE user_preferences ADD COLUMN location_pref_mode TEXT NOT NULL DEFAULT 'soft'`); } catch {}
+// Address + application facts
+try { db.exec(`ALTER TABLE users ADD COLUMN street               TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN city                 TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN state                TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN zip                  TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN work_authorized      TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN requires_sponsorship TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN available_start      TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN years_experience     TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN ts_proficiency       TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN llm_frameworks       TEXT NOT NULL DEFAULT '[]'`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN additional_info      TEXT NOT NULL DEFAULT ''`); } catch {}
+
+export { db };

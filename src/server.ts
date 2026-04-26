@@ -4,11 +4,14 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { scrapeJob, listJobs, findCareersUrl, ScraperError } from './scraper.js';
+import { scrapeJob, listJobs, findCareersUrl, searchCompanyUrls, ScraperError } from './scraper.js';
 import { analyze, formatReport, generateCoverLetter, mergeResumes, diffResumes } from './analyzer.js';
 import { autofillForm } from './autofill.js';
 import { loadHistory, appendHistory, clearHistory, saveReport } from './history.js';
-import { getTimelineEvents, getSelectorReliability, getSelectorAlerts } from './observability.js';
+import { getTimelineEvents, getSelectorReliability, getSelectorAlerts, getAnalysisInputs } from './observability.js';
+import { createUser, listUsers, getUser, deleteUser, updateUserResume, updateUserContact, updateUserPreferences, listSites, addSite, updateSite, deleteSite, getCachedFeedJobsForUser } from './profiles.js';
+import { autoApply } from './apply.js';
+import { runFeedScan } from './feed.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -69,7 +72,7 @@ app.post('/api/resume', async (req, res) => {
 // ── Analyze (streaming NDJSON) ────────────────────────────────────────────────
 
 app.post('/api/analyze', async (req, res) => {
-  const { url, save = false } = req.body as { url: string; save?: boolean };
+  const { url, save = false, userId } = req.body as { url: string; save?: boolean; userId?: number };
 
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
@@ -81,8 +84,14 @@ app.post('/api/analyze', async (req, res) => {
     emit({ type: 'progress', step: 1, of: 3, message: 'Loading resume…' });
     let resumeText: string;
     try {
-      resumeText = (await readFile('resume.txt', 'utf8')).trim();
-      if (!resumeText) throw new Error('empty');
+      if (userId) {
+        const u = getUser(userId);
+        if (!u?.resume_text) throw new Error('empty');
+        resumeText = u.resume_text;
+      } else {
+        resumeText = (await readFile('resume.txt', 'utf8')).trim();
+        if (!resumeText) throw new Error('empty');
+      }
       emit({ type: 'progress', step: 1, of: 3, message: `Resume loaded (${resumeText.length.toLocaleString()} chars)`, done: true });
     } catch {
       emit({ type: 'error', message: 'No resume found. Paste your resume in the sidebar first.' });
@@ -102,7 +111,7 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     emit({ type: 'progress', step: 3, of: 3, message: 'Analyzing with Gemma (30–60 s)…' });
-    const analysis = await analyze(jd, resumeText);
+    const analysis = await analyze(jd, resumeText, url);
     emit({ type: 'progress', step: 3, of: 3, message: 'Analysis complete', done: true });
 
     let savedTo: string | null = null;
@@ -120,6 +129,19 @@ app.post('/api/analyze', async (req, res) => {
   }
 
   res.end();
+});
+
+// ── Company search ────────────────────────────────────────────────────────────
+
+app.post('/api/search-company', async (req, res) => {
+  const { query } = req.body as { query: string };
+  if (!query?.trim()) { res.status(400).json({ error: 'query is required' }); return; }
+  try {
+    const results = await searchCompanyUrls(query.trim());
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // ── Browse jobs ───────────────────────────────────────────────────────────────
@@ -143,15 +165,22 @@ app.post('/api/jobs', async (req, res) => {
 });
 
 app.post('/api/analyze-job', async (req, res) => {
-  const { url } = req.body as { url: string };
+  const { url, userId } = req.body as { url: string; userId?: number };
   try {
-    const resumeText = (await readFile('resume.txt', 'utf8')).trim();
+    let resumeText: string;
+    if (userId) {
+      const u = getUser(userId);
+      if (!u?.resume_text) { res.status(400).json({ error: 'No resume found for this user.' }); return; }
+      resumeText = u.resume_text;
+    } else {
+      resumeText = (await readFile('resume.txt', 'utf8')).trim();
+    }
     if (!resumeText) {
       res.status(400).json({ error: 'No resume found.' });
       return;
     }
     const jd = await scrapeJob(url);
-    const analysis = await analyze(jd, resumeText);
+    const analysis = await analyze(jd, resumeText, url);
     await appendHistory({
       date: new Date().toLocaleString(),
       title: analysis.title || url.split('/').pop()!.replace(/-/g, ' '),
@@ -169,9 +198,16 @@ app.post('/api/analyze-job', async (req, res) => {
 // ── Cover letter ──────────────────────────────────────────────────────────────
 
 app.post('/api/cover-letter', async (req, res) => {
-  const { company, role, skills } = req.body as { company: string; role: string; skills?: string };
+  const { company, role, skills, userId } = req.body as { company: string; role: string; skills?: string; userId?: number };
   try {
-    const resumeText = (await readFile('resume.txt', 'utf8')).trim();
+    let resumeText: string;
+    if (userId) {
+      const u = getUser(userId);
+      if (!u?.resume_text) { res.status(400).json({ error: 'No resume found for this user.' }); return; }
+      resumeText = u.resume_text;
+    } else {
+      resumeText = (await readFile('resume.txt', 'utf8')).trim();
+    }
     if (!resumeText) { res.status(400).json({ error: 'No resume found.' }); return; }
     const letter = await generateCoverLetter(company, role, resumeText, skills ?? '');
     res.json({ letter });
@@ -271,11 +307,130 @@ app.post('/api/autofill', async (req, res) => {
   }
 });
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+app.get('/api/users', (_req, res) => {
+  res.json(listUsers());
+});
+
+app.post('/api/users', (req, res) => {
+  const { name, email } = req.body as { name: string; email?: string };
+  if (!name?.trim()) { res.status(400).json({ error: 'name is required' }); return; }
+  try {
+    res.json(createUser(name.trim(), (email ?? '').trim()));
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.get('/api/users/:id', (req, res) => {
+  const user = getUser(Number(req.params.id));
+  if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+  res.json(user);
+});
+
+app.delete('/api/users/:id', (req, res) => {
+  try { deleteUser(Number(req.params.id)); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.put('/api/users/:id/resume', async (req, res) => {
+  const { content } = req.body as { content: string };
+  try {
+    updateUserResume(Number(req.params.id), String(content ?? '').trim());
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.put('/api/users/:id/contact', (req, res) => {
+  try {
+    updateUserContact(Number(req.params.id), req.body);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.put('/api/users/:id/preferences', (req, res) => {
+  try {
+    updateUserPreferences(Number(req.params.id), req.body);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ── Job sites ─────────────────────────────────────────────────────────────────
+
+app.get('/api/sites', (_req, res) => res.json(listSites()));
+
+app.post('/api/sites', (req, res) => {
+  const { name, url, notes, ats_type, ats_slug } = req.body as { name: string; url: string; notes?: string; ats_type?: string; ats_slug?: string };
+  if (!name?.trim() || !url?.trim()) { res.status(400).json({ error: 'name and url are required' }); return; }
+  try { res.json(addSite(name.trim(), url.trim(), notes?.trim(), ats_type?.trim(), ats_slug?.trim())); }
+  catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.put('/api/sites/:id', (req, res) => {
+  try { updateSite(Number(req.params.id), req.body); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.delete('/api/sites/:id', (req, res) => {
+  try { deleteSite(Number(req.params.id)); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ── Feed cache ────────────────────────────────────────────────────────────────
+
+app.get('/api/feed/cached', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  try {
+    res.json(getCachedFeedJobsForUser(userId));
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ── Auto-apply (streaming NDJSON) ────────────────────────────────────────────
+
+app.post('/api/apply', async (req, res) => {
+  const { userId, jobUrl } = req.body as { userId: number; jobUrl: string };
+  if (!userId || !jobUrl) { res.status(400).json({ error: 'userId and jobUrl are required' }); return; }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+
+  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    await autoApply(Number(userId), jobUrl, emit);
+  } catch (e) {
+    emit({ type: 'error', message: String(e) });
+  }
+  res.end();
+});
+
+// ── Feed scan (streaming NDJSON) ──────────────────────────────────────────────
+
+app.post('/api/feed/scan', async (req, res) => {
+  const { userId } = req.body as { userId: number };
+  if (!userId) { res.status(400).json({ error: 'userId is required' }); return; }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+
+  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    await runFeedScan(Number(userId), emit);
+  } catch (e) {
+    emit({ type: 'error', message: String(e) });
+  }
+  res.end();
+});
+
 // ── Observability ─────────────────────────────────────────────────────────────
 
 app.get('/api/observability/timeline',    (_req, res) => res.json(getTimelineEvents()));
 app.get('/api/observability/reliability', (_req, res) => res.json(getSelectorReliability()));
 app.get('/api/observability/alerts',      (_req, res) => res.json(getSelectorAlerts()));
+app.get('/api/observability/inputs',      (_req, res) => res.json(getAnalysisInputs()));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 

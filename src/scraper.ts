@@ -224,6 +224,22 @@ const NAV_TEXTS = new Set([
   'refer a friend', 'referral',
 ]);
 
+// Language names that appear in locale-switcher UI widgets on career pages
+const LANG_NAME = /^(English|Deutsch|Français|Español|Português|日本語|简体中文|Nederlands|Italiano|Svenska|ไทย|한국어|Dansk|Suomi|Norsk|Polski|Română|Čeština|Magyar|Slovenčina|Slovenščina|Türkçe|Українська|Ελληνικά|עברית)$/;
+
+// Locale path segments like /en, /fr, /en-US, /fr-FR
+const LOCALE_PATH_SEG = /^\/([a-z]{2}|[a-z]{2}-[A-Z]{2})(\/|$|\?)/;
+
+function isValidJobTitle(title: string): boolean {
+  const t = title.trim();
+  if (t.length < 4) return false;
+  if (LANG_NAME.test(t)) return false;
+  // Reject UI/filter artifacts: "Sort: 19 jobs", "Filter:", "Showing…", "19 jobs"
+  if (/^(sort|filter|showing|search|opens the)/i.test(t)) return false;
+  if (/^\d+\s+jobs?$/i.test(t)) return false;
+  return true;
+}
+
 function companySlug(url: string, after: string): string {
   try {
     return (url.split(after).pop() ?? '').replace(/^\//, '').split('/')[0];
@@ -290,12 +306,42 @@ async function listLeverApi(company: string): Promise<Job[]> {
   }
 }
 
+async function listWorkableApi(company: string): Promise<Job[]> {
+  const url = `https://apply.workable.com/api/v3/accounts/${company}/jobs`;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'User-Agent': USER_AGENT, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '', location: [], department: [], remote: [], workplace: [], employment: [] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json() as { results?: Array<{ title?: string; shortcode?: string; location?: { city?: string }; department?: string }> };
+    return (data.results ?? [])
+      .filter(j => j.title && j.shortcode)
+      .map(j => ({
+        title:      j.title!.trim(),
+        url:        `https://apply.workable.com/${company}/j/${j.shortcode!}`,
+        location:   j.location?.city ?? '',
+        department: j.department ?? '',
+      }));
+  } catch (e) {
+    console.log(`  Workable API failed (${(e as Error).message}) — falling back to browser scrape`);
+    return [];
+  }
+}
+
 // ─── Generic job listing scraper ───────────────────────────────────────────────
 
 function isJobPostingUrl(href: string, listingUrl: string): boolean {
   if (href.replace(/\/$/, '') === listingUrl.replace(/\/$/, '')) return false;
   const lower = href.toLowerCase();
   if (EXCLUDE_URL_FRAGMENTS.some(f => lower.includes(f))) return false;
+  // Reject locale-only path segments like /en, /fr, /en-US — not job postings
+  try {
+    const path = new URL(href).pathname;
+    if (LOCALE_PATH_SEG.test(path)) return false;
+  } catch { /* relative URL — ignore */ }
 
   // Tier 1: known ATS domain with enough path depth
   for (const domain of ATS_DOMAINS) {
@@ -336,6 +382,7 @@ async function extractPageLinks(page: Page, baseUrl: string): Promise<LinkData[]
     if (/^(mailto:|tel:|javascript:|#)/.test(href)) continue;
     if (text.length < 5 || text.length > 150) continue;
     if (NAV_TEXTS.has(text.toLowerCase())) continue;
+    if (LANG_NAME.test(text.trim())) continue;
 
     const fullUrl = href.startsWith('http') ? href : `${base}${href}`;
     if (EXCLUDE_URL_FRAGMENTS.some(f => fullUrl.toLowerCase().includes(f))) continue;
@@ -385,7 +432,7 @@ Example: [{"title": "Senior Engineer", "url": "https://...", "location": "Remote
     ['human', 'Source page: {source_url}\n\nLinks:\n\n{links}'],
   ]);
 
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0 });
+  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
   const parser = new JsonOutputParser<Job[]>();
   const chain = prompt.pipe(llm).pipe(parser);
 
@@ -395,8 +442,10 @@ Example: [{"title": "Senior Engineer", "url": "https://...", "location": "Remote
       if (typeof item !== 'object' || !item) return [];
       const j = item as Record<string, unknown>;
       if (!j.title || !j.url) return [];
+      const title = String(j.title).trim();
+      if (!isValidJobTitle(title)) return [];
       return [{
-        title: String(j.title).trim(),
+        title,
         url: String(j.url),
         location: String(j.location ?? '').trim(),
         department: String(j.department ?? '').trim(),
@@ -410,7 +459,7 @@ Example: [{"title": "Senior Engineer", "url": "https://...", "location": "Remote
 
 function heuristicFilter(linksData: LinkData[], listingUrl: string): Job[] {
   return linksData
-    .filter(item => isJobPostingUrl(item.url, listingUrl))
+    .filter(item => isJobPostingUrl(item.url, listingUrl) && isValidJobTitle(item.text))
     .map(item => ({ title: item.text, url: item.url, location: item.context, department: '' }));
 }
 
@@ -436,7 +485,149 @@ async function listJobsGeneric(url: string, headless = true): Promise<Job[]> {
   return heuristicFilter(linksData, url);
 }
 
-export async function listJobs(url: string, headless = true): Promise<Job[]> {
+// ─── Agentic job-listing navigator ─────────────────────────────────────────────
+//
+// Gives Gemma a live browser. Each step it sees the page text + all links and
+// decides whether to click something, navigate to a URL, or declare that the
+// current page already contains individual job listings.
+// Max 8 steps before falling back to generic extraction.
+
+interface AgentAction {
+  action:  'navigate' | 'click' | 'done';
+  url?:    string;
+  selector?: string;
+  reason:  string;
+}
+
+const AGENT_PROMPT = ChatPromptTemplate.fromMessages([
+  ['system', `You are a web navigation agent. Your ONLY goal is to reach a page that lists INDIVIDUAL open job positions (e.g. "Software Engineer", "Product Manager").
+
+You must avoid:
+- Company culture / about pages
+- Benefits, perks, or values pages
+- University / internship overview pages
+- Blog posts or press releases
+
+When you can see a list of individual job titles with apply links, return action "done".
+Otherwise choose ONE action: "navigate" to a specific URL you can see on the page, or "click" a CSS selector.
+
+Return ONLY valid JSON — no other text:
+{{"action":"navigate"|"click"|"done","url":"...","selector":"...","reason":"..."}}`],
+  ['human', `Current URL: {current_url}
+
+Page content (first 3000 chars):
+{page_text}
+
+Links visible on this page:
+{links}
+
+What is your next action?`],
+]);
+
+async function agentStep(
+  page: Page,
+  startUrl: string,
+): Promise<AgentAction> {
+  const pageText  = (await page.innerText('body').catch(() => '')).slice(0, 3000);
+  const linksData = await extractPageLinks(page, page.url());
+  const linkLines = linksData
+    .slice(0, 80)
+    .map((l, i) => `${i + 1}. "${l.text}" → ${l.url}`)
+    .join('\n');
+
+  const llm    = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const parser = new JsonOutputParser<AgentAction>();
+  const chain  = AGENT_PROMPT.pipe(llm).pipe(parser);
+
+  try {
+    return await chain.invoke({
+      current_url: page.url(),
+      page_text:   pageText,
+      links:       linkLines || '(no links found)',
+    });
+  } catch {
+    return { action: 'done', reason: 'LLM parse error — attempting extraction from current page' };
+  }
+}
+
+export async function agentListJobs(
+  startUrl: string,
+  onStep?: (step: number, action: AgentAction, currentUrl: string) => void,
+): Promise<Job[]> {
+  const { browser, page } = await makeBrowser(true);
+
+  try {
+    await gotoWithFallback(page, startUrl);
+    await wait(1500, 2000);
+
+    const visited = new Set<string>();
+
+    for (let step = 1; step <= 8; step++) {
+      const currentUrl = page.url();
+      visited.add(currentUrl);
+
+      const action = await agentStep(page, startUrl);
+      onStep?.(step, action, currentUrl);
+
+      if (action.action === 'done') break;
+
+      if (action.action === 'navigate' && action.url) {
+        const target = action.url.startsWith('http')
+          ? action.url
+          : new URL(action.url, currentUrl).href;
+        if (visited.has(target)) break; // loop guard
+        await gotoWithFallback(page, target);
+        await wait(1200, 2000);
+      } else if (action.action === 'click' && action.selector) {
+        try {
+          await page.click(action.selector, { timeout: 5000 });
+          await wait(1000, 1500);
+        } catch {
+          // selector not found — fall through to extraction
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+
+    // Extract jobs from wherever Gemma landed
+    const linksData = await extractPageLinks(page, page.url());
+    await browser.close();
+
+    const jobs = await llmExtractJobs(linksData, page.url());
+    if (jobs.length) return jobs;
+    return heuristicFilter(linksData, startUrl);
+  } catch (e) {
+    await browser.close();
+    throw e;
+  }
+}
+
+export async function listJobs(
+  url: string,
+  headless = true,
+  atsOverride?: { type: string; slug: string },
+): Promise<Job[]> {
+  // Explicit ATS override (set per-site in admin) takes highest priority
+  if (atsOverride?.type) {
+    const { type, slug } = atsOverride;
+
+    if (type === 'agent') {
+      console.log(`  Agent mode — Gemma will navigate ${url} to find job listings`);
+      return agentListJobs(url);
+    }
+
+    let jobs: Job[] = [];
+    if (type === 'greenhouse') jobs = await listGreenhouseApi(slug);
+    else if (type === 'lever')  jobs = await listLeverApi(slug);
+    else if (type === 'ashby')  jobs = await listGreenhouseApi(slug);
+    else if (type === 'workable') jobs = await listWorkableApi(slug);
+
+    if (jobs.length > 0) return jobs;
+    console.log(`  ATS override (${type}:${slug}) returned 0 jobs — falling back to scraper`);
+  }
+
   const lower = url.toLowerCase();
 
   if (lower.includes('greenhouse.io')) {
@@ -464,12 +655,16 @@ export async function listJobs(url: string, headless = true): Promise<Job[]> {
 // ─── Single job page scraper ───────────────────────────────────────────────────
 
 async function scrapeAccordionJobPage(page: Page): Promise<string> {
+  // Only terms specific enough to be accordion labels — NOT generic nav words
+  // like "Benefits" or "About" which are common navigation links on company
+  // sites and cause the browser to navigate away from the job page.
   const accordionTabs = [
     'Job Description', 'Responsibilities', 'Qualifications',
-    'Benefits', 'About', 'About Us', 'About the Team',
   ];
 
+  const startUrl = new URL(page.url());
   let expandedCount = 0;
+
   for (const tabName of accordionTabs) {
     const t0 = performance.now();
     try {
@@ -477,6 +672,15 @@ async function scrapeAccordionJobPage(page: Page): Promise<string> {
       await trigger.scrollIntoViewIfNeeded();
       await trigger.click();
       await wait(500, 1000);
+
+      // If the click navigated away from the job page, go back immediately
+      const nowUrl = new URL(page.url());
+      if (nowUrl.pathname !== startUrl.pathname) {
+        await page.goBack({ waitUntil: 'domcontentloaded' });
+        recordSelectorResult({ selector: `text:${tabName}`, context: 'scraper.accordion', success: false, latencyMs: performance.now() - t0, error: 'click caused navigation — reverted' });
+        continue;
+      }
+
       console.log(`  Expanded: ${tabName}`);
       expandedCount++;
       recordSelectorResult({ selector: `text:${tabName}`, context: 'scraper.accordion', success: true, latencyMs: performance.now() - t0 });
@@ -536,6 +740,123 @@ async function scrapeGenericJobPage(page: Page): Promise<string> {
   return page.innerText('body');
 }
 
+// ─── Company search ───────────────────────────────────────────────────────────
+
+export interface CompanyResult {
+  title: string;
+  url: string;
+  verified: boolean;
+}
+
+async function probe(url: string): Promise<boolean> {
+  try {
+    const r = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(4000),
+      redirect: 'follow',
+    });
+    // 405 = HEAD not allowed but resource exists; treat as live
+    return r.ok || r.status === 405;
+  } catch {
+    return false;
+  }
+}
+
+export async function searchCompanyUrls(query: string): Promise<CompanyResult[]> {
+  const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+  const candidates: CompanyResult[] = [
+    { title: `${query} (Greenhouse)`,      url: `https://boards.greenhouse.io/${slug}`,    verified: false },
+    { title: `${query} (Lever)`,           url: `https://jobs.lever.co/${slug}`,           verified: false },
+    { title: `${query} (Ashby)`,           url: `https://jobs.ashbyhq.com/${slug}`,        verified: false },
+    { title: `${query} (Workable)`,        url: `https://apply.workable.com/${slug}`,      verified: false },
+    { title: `${query} (SmartRecruiters)`, url: `https://careers.smartrecruiters.com/${slug}`, verified: false },
+    { title: `${query} (BambooHR)`,        url: `https://${slug}.bamboohr.com/careers`,   verified: false },
+    { title: `${query} — careers page`,    url: `https://www.${slug}.com/careers`,         verified: false },
+    { title: `${query} — jobs page`,       url: `https://www.${slug}.com/jobs`,            verified: false },
+  ];
+
+  // Probe all in parallel — cap at 4 s so the UI stays snappy
+  const checks = await Promise.all(candidates.map(c => probe(c.url)));
+  checks.forEach((live, i) => { candidates[i].verified = live; });
+
+  // Verified (live) results first, then unverified guesses
+  return [
+    ...candidates.filter(c => c.verified),
+    ...candidates.filter(c => !c.verified),
+  ];
+}
+
+// ─── Listing-page detector ────────────────────────────────────────────────────
+
+// Returns true when the scraped text looks like a jobs-listing page rather than
+// an individual job description.  Signals: the "Showing roles across" header
+// used by Stripe and similar, or ≥ 4 occurrences of "Remote in " (which
+// appears next to each remote listing entry).
+function isListingPageText(text: string): boolean {
+  if (text.includes('Showing roles across')) return true;
+  const remoteInCount = (text.match(/Remote in /g) ?? []).length;
+  if (remoteInCount >= 4) return true;
+  // Many isolated department-name lines at the very start of the text
+  const firstLines = text.split('\n').slice(0, 30).filter(l => l.trim());
+  const deptLike = firstLines.filter(l => l.length < 35 && /^[A-Z]/.test(l)).length;
+  if (deptLike >= 10) return true;
+  return false;
+}
+
+// ─── Job text cleaner ─────────────────────────────────────────────────────────
+
+// Many job pages include large boilerplate blocks that confuse the LLM:
+//   • Country/language selectors  ("AU Australia\n    English\n    Deutsch…")
+//   • Footer nav lists            ("Payments\nBilling\nCapital\n…")
+//   • Repetitive short-line runs  (nav menus, link columns)
+//
+// Strategy: scan line-by-line; once we spot a run of ≥5 consecutive short
+// lines (≤40 chars) that looks like a list, drop the whole run.  Isolated
+// short lines (headings, labels) are kept.
+function cleanJobText(raw: string): string {
+  const lines = raw.split('\n').map(l => l.trim());
+  const out: string[] = [];
+
+  // Two-letter country code pattern ("AU Australia", "BR Brazil", …)
+  const COUNTRY = /^[A-Z]{2}\s+[A-Za-z ]+$/;
+
+  let shortRun: string[] = [];
+
+  const flush = () => {
+    // Only keep a short-line run if it's ≤ 3 lines (probably a heading/label)
+    if (shortRun.length <= 3) out.push(...shortRun);
+    shortRun = [];
+  };
+
+  for (const line of lines) {
+    if (!line) {
+      flush();
+      out.push('');
+      continue;
+    }
+
+    // Explicitly skip country-code / locale lines
+    if (COUNTRY.test(line) || LANG_NAME.test(line)) {
+      shortRun.push(line);
+      continue;
+    }
+
+    if (line.length <= 40) {
+      shortRun.push(line);
+    } else {
+      flush();
+      out.push(line);
+    }
+  }
+  flush();
+
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ─── Single job page scraper ───────────────────────────────────────────────────
+
 export async function scrapeJob(url: string): Promise<string> {
   let browser: Browser | null = null;
   try {
@@ -555,8 +876,15 @@ export async function scrapeJob(url: string): Promise<string> {
     if (text.trim().length < 300) text = await scrapeGenericJobPage(page);
 
     await browser.close();
-    const trimmed = text.trim();
+    const trimmed = cleanJobText(text);
     checkBlock(trimmed, url);
+    if (isListingPageText(trimmed)) {
+      throw new ScraperError(
+        `URL appears to be a job listings page, not an individual job description: ${url}\n` +
+        `  The scraped text looks like a jobs index rather than a single role.\n` +
+        `  Set an ATS override for this site (e.g. Greenhouse/Lever) or use the agent mode.`
+      );
+    }
     return trimmed;
   } catch (e) {
     await browser?.close().catch(() => {});
