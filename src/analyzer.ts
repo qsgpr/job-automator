@@ -4,6 +4,7 @@ import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { readFile } from 'node:fs/promises';
 import type { Analysis, LlmAttemptMetric, TokenUsage, ContactInfo } from './types.js';
 import { recordAnalysisInput } from './observability.js';
+import { analyzeWithGraph } from './graph.js';
 
 const ANALYSIS_PROMPT = ChatPromptTemplate.fromMessages([
   ['system', `You are a technical recruiter and career coach.
@@ -86,10 +87,24 @@ export async function analyzeWithMetrics(
   throw new Error('Analysis failed unexpectedly');
 }
 
-export async function analyze(jobDescription: string, resume: string, url?: string): Promise<Analysis> {
+export async function analyze(
+  jobDescription: string,
+  resume: string,
+  url?: string,
+  useGraph = true,
+): Promise<Analysis> {
+  if (useGraph) {
+    const jd = jobDescription.slice(0, 6000);
+    const resumeT = resume.slice(0, 3000);
+    const result = await analyzeWithGraph(jd, resumeT);
+    recordAnalysisInput({ url, title: result.title, score: result.match_score, jdSent: jd });
+    return result;
+  }
   const [result] = await analyzeWithMetrics(jobDescription, resume, url);
   return result;
 }
+
+export { analyzeWithGraph };
 
 export async function loadResume(path = 'resume.txt'): Promise<string> {
   const content = (await readFile(path, 'utf8')).trim();

@@ -1,7 +1,9 @@
 import { listJobs, agentListJobs, scrapeJob } from './scraper.js';
 import { analyze } from './analyzer.js';
-import { getUser, getActiveSites, getCachedFeedJob, upsertFeedJob, removeStaleFeedJobs } from './profiles.js';
+import { getUser, getActiveSites, getCachedFeedJob, upsertFeedJob, removeStaleFeedJobs, getCachedFeedJobsForUser } from './profiles.js';
 import type { Job, UserPreferences, FeedFilterResult, FeedJobResult, FeedScanEvent } from './types.js';
+
+export interface AbortSignal { readonly aborted: boolean }
 
 // ── Filter helpers ────────────────────────────────────────────────────────────
 
@@ -116,6 +118,7 @@ export function applyFilters(
 export async function runFeedScan(
   userId: number,
   emit: (event: FeedScanEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const user = getUser(userId);
   if (!user) throw new Error(`User ${userId} not found`);
@@ -128,6 +131,7 @@ export async function runFeedScan(
   let totalSkipped  = 0;
 
   for (let i = 0; i < sites.length; i++) {
+    if (signal?.aborted) break;
     const site = sites[i];
     emit({ type: 'site_start', site_id: site.id, site_name: site.name, site_index: i, total_sites: sites.length });
 
@@ -159,6 +163,7 @@ export async function runFeedScan(
     const seenUrls: string[] = [];
 
     for (const job of jobs) {
+      if (signal?.aborted) break;
       seenUrls.push(job.url);
 
       // ── Pre-filter (no JD text yet) ────────────────────────────────────────
@@ -245,4 +250,60 @@ export async function runFeedScan(
 
   emit({ type: 'scan_done', analyzed: totalAnalyzed, skipped: totalSkipped,
     message: `${totalAnalyzed} newly analyzed, ${totalCached} from cache, ${totalSkipped} filtered` });
+}
+
+// ── Re-analyze cached jobs without a full discovery scan ──────────────────────
+
+export async function reanalyzeFeedJobs(
+  userId:  number,
+  jobUrls: string[] | 'all',
+  emit:    (event: FeedScanEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const user = getUser(userId);
+  if (!user) throw new Error(`User ${userId} not found`);
+
+  const allCached = getCachedFeedJobsForUser(userId);
+  const targets = jobUrls === 'all'
+    ? allCached
+    : allCached.filter(c => jobUrls.includes(c.job.url));
+
+  emit({ type: 'scan_start', total_sites: targets.length });
+
+  let done = 0;
+  for (const cached of targets) {
+    if (signal?.aborted) break;
+    const { job, site_id } = cached;
+
+    emit({ type: 'job_analyzing', site_id, site_name: cached.site_name,
+      job: { job, site_id, site_name: cached.site_name,
+        filter_result: 'pass', warnings: [], analysis: null, analyzed: false } });
+
+    let analysis = null;
+    try {
+      const jdText = await scrapeJob(job.url);
+      analysis = await analyze(jdText, user.resume_text, job.url);
+    } catch (e) {
+      emit({ type: 'site_error', site_id, site_name: job.title,
+        message: `Re-analysis failed: ${(e as Error).message}` });
+      done++;
+      continue;
+    }
+
+    upsertFeedJob(userId, site_id, job, {
+      analysis,
+      filter_result: 'pass',
+      warnings: [],
+    });
+
+    done++;
+    const result: FeedJobResult = {
+      job, site_id, site_name: cached.site_name,
+      filter_result: 'pass', warnings: [], analysis, analyzed: true,
+    };
+    emit({ type: 'job_result', from_cache: false, job: result });
+  }
+
+  emit({ type: 'scan_done', analyzed: done, skipped: 0,
+    message: `${done} job${done !== 1 ? 's' : ''} re-analyzed` });
 }

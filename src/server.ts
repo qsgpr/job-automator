@@ -8,10 +8,13 @@ import { scrapeJob, listJobs, findCareersUrl, searchCompanyUrls, ScraperError } 
 import { analyze, formatReport, generateCoverLetter, mergeResumes, diffResumes } from './analyzer.js';
 import { autofillForm } from './autofill.js';
 import { loadHistory, appendHistory, clearHistory, saveReport } from './history.js';
-import { getTimelineEvents, getSelectorReliability, getSelectorAlerts, getAnalysisInputs } from './observability.js';
-import { createUser, listUsers, getUser, deleteUser, updateUserResume, updateUserContact, updateUserPreferences, listSites, addSite, updateSite, deleteSite, getCachedFeedJobsForUser } from './profiles.js';
+import { getTimelineEvents, getSelectorReliability, getSelectorAlerts, getAnalysisInputs, getSetting, setSetting, getAllSettings } from './observability.js';
+import { storeJobEmbedding, findSimilarJobs, listStoredEmbeddings } from './embeddings.js';
+import { sendNtfy } from './notify.js';
+import { reloadScheduler } from './scheduler.js';
+import { createUser, listUsers, getUser, deleteUser, updateUserResume, updateUserContact, updateUserPreferences, listSites, addSite, updateSite, deleteSite, getCachedFeedJobsForUser, getCachedFeedJob, clearFeedJobAnalysis, clearAllFeedJobAnalyses, upsertFeedJob, listApplications, addApplication, updateApplication, removeApplication } from './profiles.js';
 import { autoApply } from './apply.js';
-import { runFeedScan } from './feed.js';
+import { runFeedScan, reanalyzeFeedJobs } from './feed.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -123,12 +126,30 @@ app.post('/api/analyze', async (req, res) => {
     const title = analysis.title || url.split('/').pop()!.replace(/-/g, ' ');
     await appendHistory({ date: new Date().toLocaleString(), title, url, score: analysis.match_score ?? null, saved_to: savedTo });
 
+    // Store embedding in background — don't block the response
+    storeJobEmbedding(url, title, jd, analysis.match_score).catch(() => {});
+
     emit({ type: 'result', data: analysis, savedTo });
   } catch (e) {
     emit({ type: 'error', message: String(e) });
   }
 
   res.end();
+});
+
+app.post('/api/similar-jobs', async (req, res) => {
+  const { jd } = req.body as { jd: string };
+  if (!jd?.trim()) { res.status(400).json({ error: 'jd required' }); return; }
+  try {
+    const jobs = await findSimilarJobs(jd);
+    res.json({ jobs });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/embeddings', (_req, res) => {
+  res.json({ embeddings: listStoredEmbeddings() });
 });
 
 // ── Company search ────────────────────────────────────────────────────────────
@@ -415,14 +436,67 @@ app.post('/api/feed/scan', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.flushHeaders();
 
-  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+  const signal = { aborted: false };
+  res.on('close', () => { signal.aborted = true; });
+
+  const emit = (obj: object) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
 
   try {
-    await runFeedScan(Number(userId), emit);
+    await runFeedScan(Number(userId), emit, signal);
   } catch (e) {
     emit({ type: 'error', message: String(e) });
   }
-  res.end();
+  if (!res.writableEnded) res.end();
+});
+
+// ── Re-analyze one job ────────────────────────────────────────────────────────
+
+app.post('/api/feed/reanalyze', async (req, res) => {
+  const { userId, jobUrl } = req.body as { userId: number; jobUrl: string };
+  if (!userId || !jobUrl) { res.status(400).json({ error: 'userId and jobUrl required' }); return; }
+
+  const user = getUser(Number(userId));
+  if (!user?.resume_text) { res.status(400).json({ error: 'No resume found for this user.' }); return; }
+
+  const cached = getCachedFeedJob(Number(userId), jobUrl);
+  if (!cached) { res.status(404).json({ error: 'Job not found in feed cache.' }); return; }
+
+  try {
+    const jdText = await scrapeJob(jobUrl);
+    const analysis = await analyze(jdText, user.resume_text, jobUrl);
+    upsertFeedJob(Number(userId), cached.site_id, cached.job, {
+      analysis,
+      filter_result: cached.filter_result,
+      warnings: cached.warnings,
+    });
+    res.json({ analysis });
+  } catch (e) {
+    const status = e instanceof ScraperError ? 400 : 500;
+    res.status(status).json({ error: String(e) });
+  }
+});
+
+// ── Re-analyze all / selected jobs (streaming NDJSON) ─────────────────────────
+
+app.post('/api/feed/reanalyze-all', async (req, res) => {
+  const { userId, jobUrls } = req.body as { userId: number; jobUrls?: string[] };
+  if (!userId) { res.status(400).json({ error: 'userId is required' }); return; }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+
+  const signal = { aborted: false };
+  res.on('close', () => { signal.aborted = true; });
+
+  const emit = (obj: object) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
+
+  try {
+    await reanalyzeFeedJobs(Number(userId), jobUrls ?? 'all', emit, signal);
+  } catch (e) {
+    emit({ type: 'error', message: String(e) });
+  }
+  if (!res.writableEnded) res.end();
 });
 
 // ── Observability ─────────────────────────────────────────────────────────────
@@ -432,7 +506,70 @@ app.get('/api/observability/reliability', (_req, res) => res.json(getSelectorRel
 app.get('/api/observability/alerts',      (_req, res) => res.json(getSelectorAlerts()));
 app.get('/api/observability/inputs',      (_req, res) => res.json(getAnalysisInputs()));
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+app.get('/api/settings', (_req, res) => res.json(getAllSettings()));
+
+app.post('/api/settings', (req, res) => {
+  const patch = req.body as Record<string, string>;
+  const allowed = ['scan_enabled','scan_cron','scan_user_id','ntfy_topic','ntfy_server','alert_enabled','alert_threshold'];
+  for (const [k, v] of Object.entries(patch)) {
+    if (allowed.includes(k)) setSetting(k, String(v ?? ''));
+  }
+  reloadScheduler();
+  res.json({ ok: true });
+});
+
+app.post('/api/settings/test-ntfy', async (req, res) => {
+  const { topic, server } = req.body as { topic: string; server?: string };
+  if (!topic?.trim()) { res.status(400).json({ error: 'topic is required' }); return; }
+  try {
+    await sendNtfy(topic, 'Job Automator test', 'Connection is working ✓', server || 'https://ntfy.sh', 4);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ── Applications (kanban board) ───────────────────────────────────────────────
+
+app.get('/api/applications', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  res.json(listApplications(userId));
+});
+
+app.post('/api/applications', (req, res) => {
+  const { userId, jobUrl, jobTitle, siteName, matchScore } = req.body as {
+    userId: number; jobUrl: string; jobTitle: string; siteName?: string; matchScore?: number;
+  };
+  if (!userId || !jobUrl) { res.status(400).json({ error: 'userId and jobUrl required' }); return; }
+  try {
+    const app = addApplication(Number(userId), jobUrl, jobTitle, siteName ?? '', matchScore ?? null);
+    res.json(app);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.patch('/api/applications/:id', (req, res) => {
+  const id     = Number(req.params.id);
+  const userId = Number(req.body.userId);
+  const { status, notes } = req.body as { userId: number; status?: string; notes?: string };
+  if (!id || !userId) { res.status(400).json({ error: 'id and userId required' }); return; }
+  const result = updateApplication(id, userId, { status: status as any, notes });
+  result ? res.json(result) : res.status(404).json({ error: 'Not found' });
+});
+
+app.delete('/api/applications/:id', (req, res) => {
+  const id     = Number(req.params.id);
+  const userId = Number(req.query.userId);
+  if (!id || !userId) { res.status(400).json({ error: 'id and userId required' }); return; }
+  removeApplication(id, userId);
+  res.json({ ok: true });
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
+
+reloadScheduler();
 
 app.listen(PORT, () => {
   console.log(`\nJob Automator → http://localhost:${PORT}\n`);

@@ -100,7 +100,42 @@ db.exec(`
     latency_ms REAL,
     error      TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS applications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    job_url     TEXT NOT NULL,
+    job_title   TEXT NOT NULL DEFAULT '',
+    site_name   TEXT NOT NULL DEFAULT '',
+    match_score INTEGER,
+    status      TEXT NOT NULL DEFAULT 'interested',
+    notes       TEXT NOT NULL DEFAULT '',
+    added_at    TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(user_id, job_url)
+  );
 `);
+
+// ── Settings helpers ───────────────────────────────────────────────────────────
+
+export function getSetting(key: string): string {
+  const row = db.prepare(`SELECT value FROM app_settings WHERE key = ?`).get(key) as { value: string } | undefined;
+  return row?.value ?? '';
+}
+
+export function setSetting(key: string, value: string): void {
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
+}
+
+export function getAllSettings(): Record<string, string> {
+  const rows = db.prepare(`SELECT key, value FROM app_settings`).all() as { key: string; value: string }[];
+  return Object.fromEntries(rows.map(r => [r.key, r.value]));
+}
 
 function now(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);

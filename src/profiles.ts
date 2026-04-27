@@ -202,6 +202,7 @@ export interface CachedFeedJob {
   id:            number;
   user_id:       number;
   site_id:       number;
+  site_name:     string;
   job:           Job;
   analysis:      Analysis | null;
   match_score:   number | null;
@@ -216,6 +217,7 @@ function rowToCached(row: Record<string, unknown>): CachedFeedJob {
     id:           row.id as number,
     user_id:      row.user_id as number,
     site_id:      row.site_id as number,
+    site_name:    (row.site_name as string) ?? '',
     job: {
       title:      row.job_title  as string,
       url:        row.job_url    as string,
@@ -233,9 +235,12 @@ function rowToCached(row: Record<string, unknown>): CachedFeedJob {
 
 /** Returns the cached entry for this user+job if it exists, else null. */
 export function getCachedFeedJob(userId: number, jobUrl: string): CachedFeedJob | null {
-  const row = db.prepare(
-    `SELECT * FROM feed_jobs WHERE user_id = ? AND job_url = ?`
-  ).get(userId, jobUrl) as Record<string, unknown> | undefined;
+  const row = db.prepare(`
+    SELECT f.*, s.name AS site_name
+    FROM feed_jobs f
+    LEFT JOIN job_sites s ON s.id = f.site_id
+    WHERE f.user_id = ? AND f.job_url = ?
+  `).get(userId, jobUrl) as Record<string, unknown> | undefined;
   return row ? rowToCached(row) : null;
 }
 
@@ -323,8 +328,99 @@ export function removeStaleFeedJobs(
 /** Load all cached feed jobs for a user, newest match_score first. */
 export function getCachedFeedJobsForUser(userId: number): CachedFeedJob[] {
   return (db.prepare(`
-    SELECT * FROM feed_jobs
-    WHERE user_id = ?
-    ORDER BY match_score DESC NULLS LAST, last_seen DESC
+    SELECT f.*, s.name AS site_name
+    FROM feed_jobs f
+    LEFT JOIN job_sites s ON s.id = f.site_id
+    WHERE f.user_id = ?
+    ORDER BY f.match_score DESC NULLS LAST, f.last_seen DESC
   `).all(userId) as Record<string, unknown>[]).map(rowToCached);
+}
+
+/** Wipe the analysis for one job so it can be re-analyzed on the next scan. */
+export function clearFeedJobAnalysis(userId: number, jobUrl: string): void {
+  db.prepare(`
+    UPDATE feed_jobs SET analysis_json = NULL, match_score = NULL
+    WHERE user_id = ? AND job_url = ?
+  `).run(userId, jobUrl);
+}
+
+/** Wipe analyses for all cached jobs belonging to a user. */
+export function clearAllFeedJobAnalyses(userId: number): void {
+  db.prepare(`
+    UPDATE feed_jobs SET analysis_json = NULL, match_score = NULL WHERE user_id = ?
+  `).run(userId);
+}
+
+// ── Applications (kanban board) ───────────────────────────────────────────────
+
+export type AppStatus = 'interested' | 'applied' | 'interviewing' | 'offer' | 'rejected';
+
+export interface Application {
+  id:          number;
+  user_id:     number;
+  job_url:     string;
+  job_title:   string;
+  site_name:   string;
+  match_score: number | null;
+  status:      AppStatus;
+  notes:       string;
+  added_at:    string;
+  updated_at:  string;
+}
+
+function rowToApp(row: Record<string, unknown>): Application {
+  return {
+    id:          row.id          as number,
+    user_id:     row.user_id     as number,
+    job_url:     row.job_url     as string,
+    job_title:   row.job_title   as string,
+    site_name:   row.site_name   as string,
+    match_score: row.match_score != null ? (row.match_score as number) : null,
+    status:      (row.status     as AppStatus) ?? 'interested',
+    notes:       (row.notes      as string)    ?? '',
+    added_at:    row.added_at    as string,
+    updated_at:  row.updated_at  as string,
+  };
+}
+
+export function listApplications(userId: number): Application[] {
+  return (db.prepare(`
+    SELECT * FROM applications WHERE user_id = ? ORDER BY updated_at DESC
+  `).all(userId) as Record<string, unknown>[]).map(rowToApp);
+}
+
+export function addApplication(
+  userId:     number,
+  jobUrl:     string,
+  jobTitle:   string,
+  siteName:   string,
+  matchScore: number | null,
+): Application {
+  const ts = now();
+  db.prepare(`
+    INSERT INTO applications (user_id, job_url, job_title, site_name, match_score, status, notes, added_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'interested', '', ?, ?)
+    ON CONFLICT(user_id, job_url) DO NOTHING
+  `).run(userId, jobUrl, jobTitle, siteName, matchScore ?? null, ts, ts);
+  const row = db.prepare(`SELECT * FROM applications WHERE user_id = ? AND job_url = ?`).get(userId, jobUrl) as Record<string, unknown>;
+  return rowToApp(row);
+}
+
+export function updateApplication(
+  id:     number,
+  userId: number,
+  patch:  Partial<Pick<Application, 'status' | 'notes'>>,
+): Application | null {
+  const sets: string[] = ['updated_at = ?'];
+  const vals: unknown[] = [now()];
+  if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status); }
+  if (patch.notes  !== undefined) { sets.push('notes = ?');  vals.push(patch.notes);  }
+  vals.push(id, userId);
+  db.prepare(`UPDATE applications SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);
+  const row = db.prepare(`SELECT * FROM applications WHERE id = ? AND user_id = ?`).get(id, userId) as Record<string, unknown> | undefined;
+  return row ? rowToApp(row) : null;
+}
+
+export function removeApplication(id: number, userId: number): void {
+  db.prepare(`DELETE FROM applications WHERE id = ? AND user_id = ?`).run(id, userId);
 }

@@ -34,20 +34,30 @@ function toast(msg, type = 'success') {
 
 const api = {
   get:    path       => fetch(path).then(r => r.json()),
-  post:   (path, b)  => fetch(path, { method: 'POST',   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  post:   (path, b)  => fetch(path, { method: 'POST',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  patch:  (path, b)  => fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
   delete: path       => fetch(path, { method: 'DELETE' }).then(r => r.json()),
 
-  async stream(path, body, onEvent) {
-    const res = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+  async stream(path, body, onEvent, signal) {
+    let res;
+    try {
+      res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      throw e;
+    }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk;
+      try { chunk = await reader.read(); } catch { break; }
+      const { done, value } = chunk;
       if (done) break;
       buf += dec.decode(value, { stream: true });
       const lines = buf.split('\n');
@@ -86,6 +96,7 @@ function initTabs() {
       if (tab === 'observe') loadObservability();
       if (tab === 'feed')    refreshFeedTab();
       if (tab === 'profile') loadProfileTab();
+      if (tab === 'board')   loadBoard();
     });
   });
 }
@@ -713,6 +724,148 @@ async function loadHistory() {
     await api.delete('/api/history');
     loadHistory();
   });
+}
+
+// ── Board (kanban) ────────────────────────────────────────────────────────────
+
+const BOARD_COLS = [
+  { status: 'interested',  label: 'Interested',  color: '#6366F1' },
+  { status: 'applied',     label: 'Applied',     color: '#F59E0B' },
+  { status: 'interviewing',label: 'Interviewing',color: '#3B82F6' },
+  { status: 'offer',       label: 'Offer',       color: '#10B981' },
+  { status: 'rejected',    label: 'Rejected',    color: '#EF4444' },
+];
+
+async function loadBoard() {
+  if (!activeUserId) return;
+  const apps = await api.get(`/api/applications?userId=${activeUserId}`);
+  renderBoard(Array.isArray(apps) ? apps : []);
+}
+
+function renderBoard(apps) {
+  const board = document.getElementById('kanban-board');
+  if (!board) return;
+  board.innerHTML = '';
+
+  for (const col of BOARD_COLS) {
+    const colApps = apps.filter(a => a.status === col.status);
+    const colEl = document.createElement('div');
+    colEl.className = 'kanban-col';
+    colEl.dataset.status = col.status;
+
+    colEl.innerHTML = `
+      <div class="kanban-col-header">
+        <span class="kanban-col-dot" style="background:${col.color}"></span>
+        <span class="kanban-col-title">${col.label}</span>
+        <span class="kanban-col-count" id="col-count-${col.status}">${colApps.length}</span>
+      </div>
+      <div class="kanban-cards" id="col-${col.status}"></div>`;
+
+    const cardsEl = colEl.querySelector(`#col-${col.status}`);
+
+    if (!colApps.length) {
+      cardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
+    } else {
+      for (const app of colApps) {
+        cardsEl.appendChild(buildKanbanCard(app));
+      }
+    }
+    board.appendChild(colEl);
+  }
+}
+
+function buildKanbanCard(app) {
+  const card = document.createElement('div');
+  card.className = 'kanban-card';
+  card.dataset.id = String(app.id);
+
+  const scoreColor = app.match_score != null
+    ? (app.match_score >= 75 ? 'var(--success)' : app.match_score >= 50 ? 'var(--warning)' : 'var(--danger)')
+    : 'var(--text-muted)';
+
+  const scorePill = app.match_score != null
+    ? `<span class="kanban-score-pill" style="background:${scoreColor}22;color:${scoreColor};border:1px solid ${scoreColor}44">${app.match_score}</span>`
+    : '';
+
+  const otherCols = BOARD_COLS.filter(c => c.status !== app.status);
+  const moveOptions = otherCols.map(c =>
+    `<option value="${c.status}">→ ${c.label}</option>`
+  ).join('');
+
+  card.innerHTML = `
+    <div class="kanban-card-title">${esc(app.job_title)}</div>
+    <div class="kanban-card-meta">
+      ${app.site_name ? `<span>${esc(app.site_name)}</span>` : ''}
+      ${scorePill}
+    </div>
+    <textarea class="kanban-notes" placeholder="Add notes…" rows="2">${esc(app.notes)}</textarea>
+    <div class="kanban-actions">
+      <select class="kanban-move-select">
+        <option value="">Move to…</option>
+        ${moveOptions}
+      </select>
+      <a class="btn btn-ghost btn-sm" href="${esc(app.job_url)}" target="_blank" rel="noopener" title="Open job">↗</a>
+      <button class="btn btn-danger-ghost btn-sm kanban-delete-btn" title="Remove">✕</button>
+    </div>`;
+
+  // Autosave notes on blur
+  const textarea = card.querySelector('.kanban-notes');
+  let saveTimer;
+  textarea.addEventListener('input', () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      await api.patch(`/api/applications/${app.id}`, { userId: activeUserId, notes: textarea.value });
+      app.notes = textarea.value;
+    }, 800);
+  });
+
+  // Move to another column
+  const moveSelect = card.querySelector('.kanban-move-select');
+  moveSelect.addEventListener('change', async () => {
+    const newStatus = moveSelect.value;
+    if (!newStatus) return;
+    moveSelect.value = '';
+    const updated = await api.patch(`/api/applications/${app.id}`, { userId: activeUserId, status: newStatus });
+    if (updated && !updated.error) {
+      // Move card DOM to new column without a full re-render
+      const oldCardsEl = card.closest('.kanban-cards');
+      const newCardsEl = document.getElementById(`col-${newStatus}`);
+      if (newCardsEl) {
+        // Remove empty placeholder if present
+        newCardsEl.querySelector('.kanban-empty')?.remove();
+        app.status = newStatus;
+        // Rebuild card with updated move options
+        const newCard = buildKanbanCard(updated);
+        newCardsEl.appendChild(newCard);
+        card.remove();
+        // If old column is now empty, show placeholder
+        if (oldCardsEl && !oldCardsEl.children.length) {
+          oldCardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
+        }
+        // Update counts
+        BOARD_COLS.forEach(c => {
+          const count = document.querySelectorAll(`#col-${c.status} .kanban-card`).length;
+          const countEl = document.getElementById(`col-count-${c.status}`);
+          if (countEl) countEl.textContent = count;
+        });
+      }
+    }
+  });
+
+  // Delete
+  card.querySelector('.kanban-delete-btn').addEventListener('click', async () => {
+    if (!confirm(`Remove "${app.job_title}" from the board?`)) return;
+    await api.delete(`/api/applications/${app.id}?userId=${activeUserId}`);
+    const cardsEl = card.closest('.kanban-cards');
+    card.remove();
+    if (cardsEl && !cardsEl.querySelectorAll('.kanban-card').length) {
+      cardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
+    }
+    const countEl = document.getElementById(`col-count-${app.status}`);
+    if (countEl) countEl.textContent = String(Math.max(0, Number(countEl.textContent) - 1));
+  });
+
+  return card;
 }
 
 // ── Admin tab ─────────────────────────────────────────────────────────
@@ -1354,9 +1507,11 @@ function initWizardButtons() {
 
 // ── Job Feed tab ──────────────────────────────────────────────────────────────
 
-let feedTabInited = false;
-let feedResults   = [];   // { feedJob, fromCache } — accumulated across scans + cache loads
-let feedSortBy    = 'score';
+let feedTabInited    = false;
+let feedResults      = [];   // { feedJob, fromCache } — accumulated across scans + cache loads
+let feedSortBy       = 'score';
+let feedFilterText   = '';
+let feedScanController = null;  // AbortController for active scan
 
 function sortedFeedResults() {
   const copy = [...feedResults];
@@ -1367,7 +1522,6 @@ function sortedFeedResults() {
       return sb - sa;
     });
   } else if (feedSortBy === 'recent') {
-    // Keep arrival order (index) — most recently appended first
     copy.reverse();
   } else if (feedSortBy === 'title') {
     copy.sort((a, b) => (a.feedJob.job.title ?? '').localeCompare(b.feedJob.job.title ?? ''));
@@ -1375,25 +1529,42 @@ function sortedFeedResults() {
   return copy;
 }
 
-function renderFeedResults() {
-  const resultsEl  = document.getElementById('feed-results');
-  const sortBar    = document.getElementById('feed-sort-bar');
-  const countEl    = document.getElementById('feed-result-count');
+// Show/hide existing cards by filter text — no DOM rebuild, no animation replay.
+function applyFeedFilter() {
+  const q = feedFilterText.toLowerCase().trim();
+  let visible = 0;
+  document.querySelectorAll('#feed-results .feed-job-card').forEach(card => {
+    const match = !q || (card.dataset.searchText ?? '').includes(q);
+    card.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  const total = feedResults.length;
+  const sortBar = document.getElementById('feed-sort-bar');
+  const countEl = document.getElementById('feed-result-count');
+  if (sortBar) sortBar.classList.toggle('hidden', total === 0);
+  if (countEl) countEl.textContent = visible < total
+    ? `${visible} of ${total} job${total !== 1 ? 's' : ''}`
+    : `${total} job${total !== 1 ? 's' : ''}`;
+}
+
+// Append one card without rebuilding the list — used during live scans.
+function appendFeedJobCard(feedJob, fromCache) {
+  const resultsEl = document.getElementById('feed-results');
   if (!resultsEl) return;
+  const card = buildFeedJobCard(feedJob, fromCache);
+  resultsEl.appendChild(card);
+  applyFeedFilter();
+}
 
-  const items = sortedFeedResults();
-  if (!items.length) {
-    sortBar?.classList.add('hidden');
-    return;
-  }
-
-  sortBar?.classList.remove('hidden');
-  if (countEl) countEl.textContent = `${items.length} job${items.length !== 1 ? 's' : ''}`;
-
+// Full rebuild — only called on sort change or initial load (not on filter/append).
+function renderFeedResults() {
+  const resultsEl = document.getElementById('feed-results');
+  if (!resultsEl) return;
   resultsEl.innerHTML = '';
-  for (const { feedJob, fromCache } of items) {
+  for (const { feedJob, fromCache } of sortedFeedResults()) {
     resultsEl.appendChild(buildFeedJobCard(feedJob, fromCache));
   }
+  applyFeedFilter(); // re-apply active filter to the freshly rendered cards
 }
 
 // refreshFeedTab is called every time the tab is switched to
@@ -1446,9 +1617,13 @@ function initFeedTab() {
   if (feedTabInited) return;
   feedTabInited = true;
 
-  const scanBtn   = document.getElementById('feed-scan-btn');
-  const userInfo  = document.getElementById('feed-user-info');
-  const siteCount = document.getElementById('feed-site-count');
+  const scanBtn          = document.getElementById('feed-scan-btn');
+  const stopBtn          = document.getElementById('feed-stop-btn');
+  const refreshBtn       = document.getElementById('feed-refresh-btn');
+  const reanalyzeAllBtn  = document.getElementById('feed-reanalyze-all-btn');
+  const filterInput      = document.getElementById('feed-filter');
+  const userInfo         = document.getElementById('feed-user-info');
+  const siteCount        = document.getElementById('feed-site-count');
 
   async function refreshFeedMeta() {
     if (activeUserId) {
@@ -1474,6 +1649,25 @@ function initFeedTab() {
     await startFeedScan(activeUserId);
   });
 
+  stopBtn.addEventListener('click', () => {
+    feedScanController?.abort();
+  });
+
+  refreshBtn.addEventListener('click', () => refreshFeedTab());
+
+  reanalyzeAllBtn.addEventListener('click', async () => {
+    if (!activeUserId) { toast('Select a profile first', 'error'); return; }
+    if (!feedResults.length) { toast('No jobs in feed yet — run a scan first', 'error'); return; }
+    if (!confirm(`Re-analyze all ${feedResults.length} cached jobs? This will re-scrape and re-score each one.`)) return;
+    await startReanalyzeAll(activeUserId);
+  });
+
+  // Filter: show/hide existing cards — no rebuild
+  filterInput?.addEventListener('input', () => {
+    feedFilterText = filterInput.value;
+    applyFeedFilter();
+  });
+
   // Sort buttons
   document.querySelectorAll('.sort-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1486,20 +1680,23 @@ function initFeedTab() {
 
 async function startFeedScan(userId) {
   const scanBtn    = document.getElementById('feed-scan-btn');
+  const stopBtn    = document.getElementById('feed-stop-btn');
   const progressEl = document.getElementById('feed-progress');
   const fillEl     = document.getElementById('feed-progress-fill');
   const labelEl    = document.getElementById('feed-progress-label');
   const resultsEl  = document.getElementById('feed-results');
   const summaryEl  = document.getElementById('feed-summary');
 
-  scanBtn.disabled = true;
-  scanBtn.innerHTML = '<span class="spinner"></span> Scanning…';
+  feedScanController = new AbortController();
+
+  scanBtn.classList.add('hidden');
+  stopBtn.classList.remove('hidden');
   progressEl.classList.remove('hidden');
   summaryEl.classList.add('hidden');
   resultsEl.innerHTML = '';
   resultsEl.dataset.scanActive = '1';
   fillEl.style.width = '0%';
-  feedResults = [];   // reset for fresh scan
+  feedResults = [];
 
   let totalSites   = 0;
   let sitesDone    = 0;
@@ -1529,7 +1726,7 @@ async function startFeedScan(userId) {
         analyzed++;
       }
       feedResults.push({ feedJob: evt.job, fromCache: !!evt.from_cache });
-      renderFeedResults();
+      appendFeedJobCard(evt.job, !!evt.from_cache);
     } else if (evt.type === 'job_filtered') {
       skipped++;
     } else if (evt.type === 'site_error') {
@@ -1563,18 +1760,79 @@ async function startFeedScan(userId) {
     } else if (evt.type === 'error') {
       labelEl.textContent = `Error: ${evt.message}`;
     }
-  });
+  }, feedScanController?.signal);
 
   delete resultsEl.dataset.scanActive;
+  feedScanController = null;
 
-  scanBtn.disabled = false;
-  scanBtn.textContent = 'Start Scan';
+  scanBtn.classList.remove('hidden');
+  stopBtn.classList.add('hidden');
+}
+
+async function startReanalyzeAll(userId) {
+  const scanBtn    = document.getElementById('feed-scan-btn');
+  const stopBtn    = document.getElementById('feed-stop-btn');
+  const progressEl = document.getElementById('feed-progress');
+  const fillEl     = document.getElementById('feed-progress-fill');
+  const labelEl    = document.getElementById('feed-progress-label');
+  const summaryEl  = document.getElementById('feed-summary');
+
+  feedScanController = new AbortController();
+
+  scanBtn.classList.add('hidden');
+  stopBtn.classList.remove('hidden');
+  progressEl.classList.remove('hidden');
+  summaryEl.classList.add('hidden');
+  fillEl.style.width = '5%';
+  labelEl.textContent = 'Starting re-analysis…';
+
+  let done = 0;
+  const total = feedResults.length;
+
+  await api.stream('/api/feed/reanalyze-all', { userId }, evt => {
+    if (evt.type === 'job_analyzing') {
+      labelEl.textContent = `Re-analyzing: ${evt.job?.job?.title ?? '…'}`;
+    } else if (evt.type === 'job_result') {
+      done++;
+      fillEl.style.width = `${Math.round((done / total) * 100)}%`;
+      const url = evt.job?.job?.url;
+      const idx = feedResults.findIndex(r => r.feedJob.job.url === url);
+      if (idx >= 0) feedResults[idx] = { feedJob: evt.job, fromCache: false };
+      // Replace only the affected card — no full list rebuild
+      const oldCard = url && document.querySelector(`#feed-results .feed-job-card[data-url="${CSS.escape(url)}"]`);
+      if (oldCard) {
+        const newCard = buildFeedJobCard(evt.job, false);
+        oldCard.replaceWith(newCard);
+        applyFeedFilter();
+      }
+    } else if (evt.type === 'site_error') {
+      toast(`${evt.site_name}: ${evt.message}`, 'error');
+    } else if (evt.type === 'scan_done') {
+      fillEl.style.width = '100%';
+      labelEl.textContent = evt.message || 'Re-analysis complete';
+      setTimeout(() => progressEl.classList.add('hidden'), 2000);
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--success-border)">
+          <div style="font-size:13px;font-weight:600;color:var(--success)">${ICON_CHECK} Re-analysis complete</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:6px">${evt.message}</div>
+        </div>`;
+    } else if (evt.type === 'error') {
+      labelEl.textContent = `Error: ${evt.message}`;
+    }
+  }, feedScanController.signal);
+
+  feedScanController = null;
+  scanBtn.classList.remove('hidden');
+  stopBtn.classList.add('hidden');
 }
 
 function buildFeedJobCard(feedJob, fromCache = false) {
   const { job, site_name, filter_result, warnings, analysis, analyzed } = feedJob;
   const card = document.createElement('div');
   card.className = `feed-job-card${warnings.length ? ' has-warnings' : ''}`;
+  card.dataset.url = job.url;
+  card.dataset.searchText = `${job.title} ${site_name ?? ''} ${job.location ?? ''} ${job.department ?? ''}`.toLowerCase();
 
   const score = analysis?.match_score;
   const scoreHTML = typeof score === 'number' ? `
@@ -1601,12 +1859,33 @@ function buildFeedJobCard(feedJob, fromCache = false) {
     <div class="job-card-actions">
       ${!analyzed ? `<button class="btn btn-primary btn-sm feed-analyze-btn">Analyze</button>` : ''}
       ${analyzed  ? `<button class="btn btn-primary btn-sm feed-apply-btn">Apply →</button>` : ''}
+      ${analyzed  ? `<button class="btn btn-ghost btn-sm feed-reanalyze-btn" title="Re-score against your current resume">↺ Re-analyze</button>` : ''}
+      <button class="btn btn-ghost btn-sm feed-track-btn" title="Add to Board">＋ Track</button>
       <button class="btn btn-secondary btn-sm feed-copy-btn">Copy URL</button>
       <a class="btn btn-ghost btn-sm" href="${esc(job.url)}" target="_blank" rel="noopener">Open →</a>
     </div>`;
 
   card.querySelector('.feed-copy-btn')?.addEventListener('click', () => {
     navigator.clipboard.writeText(job.url).then(() => toast('URL copied'));
+  });
+
+  card.querySelector('.feed-track-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const data = await api.post('/api/applications', {
+      userId: activeUserId,
+      jobUrl: job.url,
+      jobTitle: job.title,
+      siteName: site_name ?? '',
+      matchScore: analysis?.match_score ?? null,
+    });
+    if (data?.id) {
+      btn.textContent = '✓ Tracked';
+      toast('Added to Board → Interested');
+    } else {
+      btn.disabled = false;
+      toast(data?.error || 'Already on Board', 'error');
+    }
   });
 
   card.querySelector('.feed-apply-btn')?.addEventListener('click', () => {
@@ -1626,6 +1905,29 @@ function buildFeedJobCard(feedJob, fromCache = false) {
       card.querySelector('.job-card-actions').before(el);
     } else {
       toast(data.error || 'Analysis failed', 'error');
+    }
+  });
+
+  card.querySelector('.feed-reanalyze-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span>';
+    const data = await api.post('/api/feed/reanalyze', { userId: activeUserId, jobUrl: job.url });
+    if (data.analysis) {
+      const idx = feedResults.findIndex(r => r.feedJob.job.url === job.url);
+      if (idx >= 0) {
+        feedResults[idx].feedJob.analysis = data.analysis;
+        feedResults[idx].feedJob.analyzed = true;
+        // Replace only this card — no full list rebuild
+        const newCard = buildFeedJobCard(feedResults[idx].feedJob, false);
+        card.replaceWith(newCard);
+        applyFeedFilter();
+      }
+      toast('Re-analyzed');
+    } else {
+      btn.disabled = false;
+      btn.textContent = '↺ Re-analyze';
+      toast(data.error || 'Re-analysis failed', 'error');
     }
   });
 
@@ -2247,4 +2549,143 @@ async function loadObservability() {
       container.appendChild(card);
     }
   }
+
+  // ── Auto-scan & Notifications settings ─────────────────────────────────────
+  const settings = await api.get('/api/settings');
+  const users = await api.get('/api/users');
+
+  const settingsSection = document.createElement('div');
+  settingsSection.innerHTML = `
+    <div class="section-title" style="margin-top:28px">Auto-Scan Schedule</div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="settings-grid">
+        <div class="form-group">
+          <label class="label">Enabled</label>
+          <div class="mode-toggle">
+            <button class="mode-btn ${settings.scan_enabled === '1' ? 'active' : ''}" id="scan-toggle-on" data-val="1">On</button>
+            <button class="mode-btn ${settings.scan_enabled !== '1' ? 'active' : ''}" id="scan-toggle-off" data-val="0">Off</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="label">Run as profile</label>
+          <select id="scan-user-select" class="input">
+            <option value="">— select —</option>
+            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === settings.scan_user_id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:14px">
+        <label class="label">Schedule <span class="label-hint">cron expression — e.g. <code style="font-family:var(--mono)">0 9 * * *</code> = daily at 9am</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 9 * * *">Daily 9am</button>
+          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 9 * * 1-5">Weekdays 9am</button>
+          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 */6 * * *">Every 6 h</button>
+        </div>
+        <input id="scan-cron-input" class="input" style="margin-top:8px;font-family:var(--mono)"
+          value="${esc(settings.scan_cron || '0 9 * * *')}" placeholder="0 9 * * *" />
+      </div>
+      <div style="margin-top:14px">
+        <button class="btn btn-primary btn-sm" id="save-schedule-btn">Save Schedule</button>
+        <span id="schedule-save-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+      </div>
+    </div>
+
+    <div class="section-title">Notifications (ntfy)</div>
+    <div class="card">
+      <div class="settings-grid">
+        <div class="form-group">
+          <label class="label">Alerts enabled</label>
+          <div class="mode-toggle">
+            <button class="mode-btn ${settings.alert_enabled === '1' ? 'active' : ''}" id="alert-toggle-on">On</button>
+            <button class="mode-btn ${settings.alert_enabled !== '1' ? 'active' : ''}" id="alert-toggle-off">Off</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="label">Min score to alert</label>
+          <input id="alert-threshold" class="input" type="number" min="0" max="100"
+            value="${esc(settings.alert_threshold || '80')}" style="max-width:90px" />
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:14px">
+        <label class="label">ntfy topic <span class="label-hint">just the topic name, e.g. <code style="font-family:var(--mono)">my-jobs</code></span></label>
+        <input id="ntfy-topic" class="input" value="${esc(settings.ntfy_topic || '')}" placeholder="my-jobs" />
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label class="label">ntfy server <span class="label-hint">leave blank for ntfy.sh</span></label>
+        <input id="ntfy-server" class="input" value="${esc(settings.ntfy_server || '')}" placeholder="https://ntfy.sh" />
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="save-ntfy-btn">Save</button>
+        <button class="btn btn-secondary btn-sm" id="test-ntfy-btn">Send Test</button>
+        <span id="ntfy-save-status" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
+    </div>`;
+
+  container.appendChild(settingsSection);
+
+  // Schedule enabled toggle
+  let scanEnabled = settings.scan_enabled === '1';
+  settingsSection.querySelectorAll('[id^="scan-toggle-"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      scanEnabled = btn.dataset.val === '1';
+      settingsSection.querySelector('#scan-toggle-on').classList.toggle('active', scanEnabled);
+      settingsSection.querySelector('#scan-toggle-off').classList.toggle('active', !scanEnabled);
+    });
+  });
+
+  // Alert enabled toggle
+  let alertEnabled = settings.alert_enabled === '1';
+  settingsSection.querySelectorAll('[id^="alert-toggle-"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      alertEnabled = btn.id === 'alert-toggle-on';
+      settingsSection.querySelector('#alert-toggle-on').classList.toggle('active', alertEnabled);
+      settingsSection.querySelector('#alert-toggle-off').classList.toggle('active', !alertEnabled);
+    });
+  });
+
+  // Cron presets
+  settingsSection.querySelectorAll('.scan-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      settingsSection.querySelector('#scan-cron-input').value = btn.dataset.cron;
+    });
+  });
+
+  // Save schedule
+  settingsSection.querySelector('#save-schedule-btn').addEventListener('click', async () => {
+    const status = settingsSection.querySelector('#schedule-save-status');
+    status.textContent = 'Saving…';
+    await api.post('/api/settings', {
+      scan_enabled:  scanEnabled ? '1' : '0',
+      scan_cron:     settingsSection.querySelector('#scan-cron-input').value.trim(),
+      scan_user_id:  settingsSection.querySelector('#scan-user-select').value,
+    });
+    status.textContent = '✓ Saved';
+    setTimeout(() => { status.textContent = ''; }, 2500);
+  });
+
+  // Save ntfy
+  settingsSection.querySelector('#save-ntfy-btn').addEventListener('click', async () => {
+    const status = settingsSection.querySelector('#ntfy-save-status');
+    status.textContent = 'Saving…';
+    await api.post('/api/settings', {
+      alert_enabled:    alertEnabled ? '1' : '0',
+      alert_threshold:  settingsSection.querySelector('#alert-threshold').value,
+      ntfy_topic:       settingsSection.querySelector('#ntfy-topic').value.trim(),
+      ntfy_server:      settingsSection.querySelector('#ntfy-server').value.trim(),
+    });
+    status.textContent = '✓ Saved';
+    setTimeout(() => { status.textContent = ''; }, 2500);
+  });
+
+  // Test ntfy
+  settingsSection.querySelector('#test-ntfy-btn').addEventListener('click', async () => {
+    const status = settingsSection.querySelector('#ntfy-save-status');
+    const topic  = settingsSection.querySelector('#ntfy-topic').value.trim();
+    const server = settingsSection.querySelector('#ntfy-server').value.trim();
+    if (!topic) { toast('Enter a topic first', 'error'); return; }
+    status.textContent = 'Sending…';
+    const res = await api.post('/api/settings/test-ntfy', { topic, server });
+    status.textContent = res.ok ? '✓ Sent!' : `Error: ${res.error}`;
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  });
 }
