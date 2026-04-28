@@ -1,109 +1,277 @@
 # Job Automator
 
-A local AI tool that scrapes job postings, scores them against your resume, generates cover letters, and demos browser-based form auto-fill — all powered by Gemma running on your machine via Ollama.
+A full-stack job market intelligence system that automatically scrapes job listings, analyzes them against your resume using AI, and provides intelligent tracking and notifications. Built with Playwright, LangGraph, and LLM-powered analysis.
 
-Built with TypeScript, Playwright, and LangChain.
+## Features
 
-## What it does
+### Core Intelligence
+- **Resume-Job Matching**: Uses LangGraph to extract job requirements and score your resume against them via vector embeddings
+- **Multi-ATS Support**: Scrapes jobs from Greenhouse, Lever, Ashby, and Workable job boards
+- **Vector Embeddings**: Ollama-powered embeddings with SQLite cosine similarity for semantic matching
+- **Caching**: Automatic result caching to avoid re-processing identical jobs
 
-| Feature | Description |
-|---|---|
-| **Analyze Job** | Paste a job URL → Playwright scrapes it → Gemma scores your resume fit (0–100) |
-| **Browse Jobs** | Enter a company's careers page → lists all open roles |
-| **Cover Letter** | Generates a tailored 3-4 paragraph cover letter from your resume + role |
-| **Auto-Fill Demo** | Playwright opens a real browser and types your application fields live |
-| **History** | Tracks every job you've analyzed with scores and timestamps |
-| **Observability** | Per-run traces, LLM latency, token usage, and selector drift alerts |
+### Web UI
+- **Feed View**: Browse all jobs with real-time match scores, filter/search, and re-analyze capabilities
+- **Application Board**: Kanban-style tracking with columns (Interested → Applied → Interviewing → Offer → Rejected)
+- **Auto-Scan Scheduling**: Optional cron-based automated job scanning with customizable frequency
+- **High-Match Alerts**: ntfy push notifications when jobs exceed your match threshold
+- **Settings Management**: Configure scanning schedule, alert thresholds, notification topics
+
+### CLI Tools
+- Bulk job scraping with progress tracking
+- Individual job analysis with detailed output
+- Resume upload (PDF/DOCX) with preprocessing
 
 ## Architecture
 
 ```
-src/
-  main.ts          CLI entry point (Commander)
-  scraper.ts       Playwright scraper + Greenhouse/Lever public APIs
-  analyzer.ts      LangChain + Gemma (via Ollama) — analysis, cover letters
-  autofill.ts      Playwright form auto-fill demo
-  observability.ts SQLite-backed run traces and selector reliability stats
-  types.ts         Shared interfaces
+┌─────────────────────────────────────────────────────────────┐
+│                        Web UI (React-like)                  │
+│  ├─ Feed Tab: Job listing with scores & re-analyze         │
+│  ├─ Board Tab: Kanban application tracker                  │
+│  ├─ Search Tab: Advanced filtering                         │
+│  └─ Admin Tab: Settings & configuration                    │
+└────────────┬────────────────────────────────────────────────┘
+             │ NDJSON streaming
+┌────────────┴────────────────────────────────────────────────┐
+│                      Express Server                         │
+│  ├─ /api/scan: Stream job scraping + analysis              │
+│  ├─ /api/feed: Paginated cached results                    │
+│  ├─ /api/applications: CRUD for tracked jobs               │
+│  ├─ /api/settings: Configuration management                │
+│  └─ /api/settings/test-ntfy: Notification testing          │
+└────────┬──────┬──────┬──────┬──────────────────────────────┘
+         │      │      │      │
+    ┌────▼──┐ ┌─▼────┐│      │
+    │Scraper│ │LLM   ││      │
+    │       │ │Chain ││      │
+    └──┬────┘ └──────┘│      │
+       │              │      │
+    ┌──▼──────────────▼─┐    │
+    │   SQLite DB      │    │
+    │ ├─ jobs          │    │
+    │ ├─ analyses      │    │
+    │ ├─ applications  │    │
+    │ ├─ app_settings  │    │
+    │ └─ resume_cache  │    │
+    └──────────────────┘    │
+                            │
+                    ┌───────▼─────┐
+                    │ Ollama LLM  │
+                    │ & Embeddings│
+                    └─────────────┘
 ```
 
-**Scraper dispatch** (fastest path first):
-1. Greenhouse public JSON API — instant, no browser needed
-2. Lever public JSON API — instant, no browser needed
-3. Playwright + structured card selectors
-4. Playwright + Gemma (LLM reads the link list and identifies job postings)
+### Pipeline: LangGraph 2-Node Analysis
 
-**Bot-detection handling**: multi-phrase block detection, realistic user-agent + viewport, random human-timing delays.
+1. **Extract Node**: Uses LLM to identify required skills, experience, and qualifications from job description
+2. **Score Node**: Compares extracted requirements against your resume using vector similarity
+3. **Output**: Match score (0-100) with detailed analysis
 
-## Prerequisites
+Vector embeddings are stored in SQLite and queried via cosine similarity for fast matching.
 
-- Node.js 18+
-- [Ollama](https://ollama.com) installed and running
-- Gemma 4 26B pulled: `ollama pull gemma4:26b`
+## Tech Stack
 
-## Setup
+### Backend
+- **Node.js 22** with TypeScript
+- **Express.js** for HTTP API
+- **LangChain/LangGraph** for AI orchestration
+- **Ollama** for local LLM and embeddings (no external API costs)
+- **Playwright** for headless browser automation
+- **Better-SQLite3** for embedded database
+- **node-cron** for scheduled scanning
+- **ntfy** for push notifications
+
+### Frontend
+- **Vanilla JavaScript** (no build step needed)
+- **CSS Grid/Flexbox** with modern design patterns
+- **EventSource** for real-time streaming updates
+
+### DevOps
+- **Docker** multi-stage build for production
+- **GitHub Actions** CI pipeline (type-check, build, Docker build)
+
+## Installation
+
+### Prerequisites
+- **Node.js 22** or higher
+- **Ollama** running locally (default: http://localhost:11434)
+  - Pull required models: `ollama pull mistral` and `ollama pull nomic-embed-text`
+
+### Setup
 
 ```bash
-# 1. Clone
-git clone https://github.com/<your-username>/job-automator.git
+# Clone and install
+git clone <repo>
 cd job-automator
-
-# 2. Install dependencies
 npm install
 
-# 3. Install Playwright browsers
-npx playwright install chromium
+# Build TypeScript
+npm run build
 
-# 4. Add your resume
-touch resume.txt   # then paste your resume text inside
+# Web UI (development)
+npm run dev:web
+# Open http://localhost:3000
 
-# 5. Start Ollama (in a separate terminal)
-ollama serve
+# CLI tool (development)
+npm run dev
 ```
 
 ## Usage
 
-### Analyze a single job posting
+### Web Interface
+
+1. **Upload Resume** (Admin tab):
+   - Upload PDF or DOCX file
+   - Extracts text automatically
+
+2. **Configure Settings** (Admin tab):
+   - Enable/disable auto-scanning
+   - Set cron schedule (presets: Daily 9am, Weekdays 9am, Every 6h, or custom)
+   - Configure ntfy topic and server for alerts
+   - Set match score threshold (default: 80)
+
+3. **Browse Feed** (Feed tab):
+   - View all analyzed jobs with match scores
+   - Search/filter by title, company, score
+   - Click "Re-analyze" on individual jobs or "Re-scan All" to update scores
+   - Click "＋ Track" to add to application board
+
+4. **Track Applications** (Board tab):
+   - Drag cards between columns (Interested → Applied → Interviewing → Offer → Rejected)
+   - Add/edit notes on each application
+   - Delete tracked applications
+
+### CLI
 
 ```bash
-npx tsx src/main.ts https://boards.greenhouse.io/company/jobs/12345
+# Scan job boards and analyze all jobs
+npm start
 
-# Save a report to reports/
-npx tsx src/main.ts --url <url> --save
+# With progress tracking and real-time streaming output
+# Results cached in SQLite, no re-processing of identical jobs
 ```
 
-### List all open roles from a careers page
+## Configuration
+
+Settings are managed via the Admin tab and stored in SQLite:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `scan_enabled` | bool | Auto-scan enabled |
+| `scan_cron` | string | Cron expression (e.g., `0 9 * * *` = 9am daily) |
+| `scan_user_id` | number | User ID for scheduled scans |
+| `alert_enabled` | bool | Send ntfy alerts on high matches |
+| `alert_threshold` | number | Score threshold for alerts (0-100) |
+| `ntfy_topic` | string | ntfy topic (e.g., `job-alerts-username`) |
+| `ntfy_server` | string | ntfy server URL (default: `https://ntfy.sh`) |
+
+## Docker Deployment
 
 ```bash
-npx tsx src/main.ts --list-jobs https://company.com/careers
+# Build image
+docker build -t job-automator .
+
+# Run with Ollama (requires docker-compose for sidecar)
+docker-compose up
+
+# Or standalone (if Ollama runs separately)
+docker run -p 3000:3000 \
+  -e OLLAMA_URL=http://your-ollama-host:11434 \
+  job-automator
 ```
 
-### Show analysis history
+## Architecture & Learning Gaps
+
+This project bridges several advanced ML/AI engineering gaps:
+
+### What Works Well
+- **Semantic Matching**: Vector embeddings + cosine similarity properly match resume skills to job requirements
+- **Streaming UX**: NDJSON streaming provides real-time feedback during long-running scans
+- **Local LLM**: Ollama eliminates external API costs and latency
+- **Scalable Scraping**: Playwright handles modern job boards with JavaScript rendering
+
+### Known Limitations & Future Work
+
+1. **Fine-tuning**: Ollama's base models aren't fine-tuned on job/resume data. A production system would:
+   - Collect labeled job-resume pairs from user feedback
+   - Fine-tune embeddings on job domain vocabulary
+   - Use reinforcement learning to improve scoring accuracy
+
+2. **Cloud Infrastructure**:
+   - This single-server design doesn't scale to 1000s of concurrent scans
+   - Production would use: job queue (Bull/RabbitMQ), distributed LLM inference (vLLM/ray), caching layer (Redis)
+
+3. **Resume Preprocessing**:
+   - Current approach loads entire resume into context
+   - Better approach: extract structured data (skills, experience, education) separately and index each component
+
+4. **Multi-round Analysis**:
+   - Single LangGraph pass may miss nuanced requirements
+   - Advanced systems iterate: extract → clarify ambiguities → re-score → rank
+
+5. **Feedback Loop**:
+   - No learning from which jobs the user actually applied to
+   - Could retrain embeddings based on user decisions (applied ✓, rejected ✗)
+
+## Project Structure
+
+```
+.
+├── src/
+│   ├── main.ts              # CLI entry point
+│   ├── server.ts            # Express server + API routes
+│   ├── graph.ts             # LangGraph 2-node analysis pipeline
+│   ├── analyzer.ts          # LLM prompt engineering
+│   ├── scraper.ts           # Playwright job scraping
+│   ├── embeddings.ts        # Ollama vector embeddings
+│   ├── feed.ts              # Feed aggregation logic
+│   ├── profiles.ts          # Resume & application management
+│   ├── observability.ts     # SQLite & settings
+│   ├── scheduler.ts         # node-cron scheduled scanning
+│   ├── notify.ts            # ntfy notifications
+│   ├── autofill.ts          # Job application helper (future)
+│   ├── apply.ts             # Application workflow (future)
+│   ├── history.ts           # Activity tracking (future)
+│   └── types.ts             # TypeScript interfaces
+├── public/
+│   ├── index.html           # Web UI markup
+│   ├── style.css            # Tailwind-inspired styling
+│   └── app.js               # Frontend logic
+├── Dockerfile               # Multi-stage build
+├── docker-compose.yml       # Ollama sidecar
+├── tsconfig.json            # TypeScript config
+├── package.json
+└── .github/workflows/
+    └── ci.yml               # GitHub Actions
+```
+
+## Development
 
 ```bash
-npx tsx src/main.ts --history
+# Type checking
+npm run build
+
+# Format check
+npx tsc --noEmit
+
+# Watch mode (backend)
+npm run dev:web
+
+# Watch mode (CLI)
+npm run dev
 ```
 
-### Run the auto-fill demo
+## Contributing
 
-```bash
-npx tsx src/autofill.ts
-npx tsx src/autofill.ts --mode instant
-npx tsx src/autofill.ts --mode instant_per_field --from-files
-```
+This is a learning project exploring:
+- Semantic job-resume matching with embeddings
+- Streaming server-sent event UX patterns
+- Local LLM integration without external APIs
+- Full-stack TypeScript from scraping to UI
 
-## Supported job boards
+For bugs or improvements, open an issue or PR.
 
-Works best with:
-- **Greenhouse** (`boards.greenhouse.io`) — uses public API, fastest
-- **Lever** (`jobs.lever.co`) — uses public API, fastest
-- **Ashby, Workday, iCIMS, BambooHR, Workable** — Playwright fallback
-- **Any custom careers page** — Playwright + Gemma link extraction
+## License
 
-Indeed and LinkedIn actively block headless browsers and are not reliable targets.
-
-## Notes
-
-- `resume.txt`, `cover_letter.txt`, `history.json`, `reports/`, and `observability.db` are gitignored — personal data, never committed.
-- Analysis takes 30–60 seconds depending on your hardware (Gemma 4 26B is a large model).
-- The auto-fill demo targets the local `form.html` file — it does not submit to any real job board.
+MIT
