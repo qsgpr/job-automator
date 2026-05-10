@@ -4,30 +4,46 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, '..', 'observability.db');
+const DB_PATH = process.env.DB_PATH ?? join(__dirname, '..', 'observability.db');
 
 const db = new Database(DB_PATH);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    email       TEXT NOT NULL DEFAULT '',
-    resume_text TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                 TEXT NOT NULL,
+    email                TEXT NOT NULL DEFAULT '',
+    phone                TEXT NOT NULL DEFAULT '',
+    linkedin             TEXT NOT NULL DEFAULT '',
+    resume_text          TEXT NOT NULL DEFAULT '',
+    supabase_user_id     TEXT,
+    street               TEXT NOT NULL DEFAULT '',
+    city                 TEXT NOT NULL DEFAULT '',
+    state                TEXT NOT NULL DEFAULT '',
+    zip                  TEXT NOT NULL DEFAULT '',
+    work_authorized      TEXT NOT NULL DEFAULT '',
+    requires_sponsorship TEXT NOT NULL DEFAULT '',
+    available_start      TEXT NOT NULL DEFAULT '',
+    years_experience     TEXT NOT NULL DEFAULT '',
+    ts_proficiency       TEXT NOT NULL DEFAULT '',
+    llm_frameworks       TEXT NOT NULL DEFAULT '[]',
+    additional_info      TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS user_preferences (
-    user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    work_type      TEXT NOT NULL DEFAULT 'any',
-    work_type_mode TEXT NOT NULL DEFAULT 'soft',
-    departments    TEXT NOT NULL DEFAULT '[]',
-    salary_min     INTEGER,
-    salary_mode    TEXT NOT NULL DEFAULT 'soft',
-    exp_level      TEXT NOT NULL DEFAULT 'any',
-    exp_level_mode TEXT NOT NULL DEFAULT 'soft',
-    location_pref  TEXT NOT NULL DEFAULT ''
+    user_id             INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    work_type           TEXT NOT NULL DEFAULT 'any',
+    work_type_mode      TEXT NOT NULL DEFAULT 'soft',
+    departments         TEXT NOT NULL DEFAULT '[]',
+    departments_mode    TEXT NOT NULL DEFAULT 'soft',
+    salary_min          INTEGER,
+    salary_mode         TEXT NOT NULL DEFAULT 'soft',
+    exp_level           TEXT NOT NULL DEFAULT 'any',
+    exp_level_mode      TEXT NOT NULL DEFAULT 'soft',
+    location_pref       TEXT NOT NULL DEFAULT '',
+    location_pref_mode  TEXT NOT NULL DEFAULT 'soft'
   );
 
   CREATE TABLE IF NOT EXISTS job_sites (
@@ -36,6 +52,8 @@ db.exec(`
     url      TEXT NOT NULL UNIQUE,
     notes    TEXT NOT NULL DEFAULT '',
     active   INTEGER NOT NULL DEFAULT 1,
+    ats_type TEXT NOT NULL DEFAULT '',
+    ats_slug TEXT NOT NULL DEFAULT '',
     added_at TEXT NOT NULL
   );
 
@@ -118,6 +136,69 @@ db.exec(`
     added_at    TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(user_id, job_url)
+  );
+
+  CREATE TABLE IF NOT EXISTS company_profiles (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_name         TEXT NOT NULL UNIQUE,
+    website              TEXT,
+    description          TEXT,
+    tech_stack           TEXT,
+    culture_signals      TEXT,
+    recent_news          TEXT,
+    interview_talking_points TEXT,
+    founded_year         INTEGER,
+    employee_count       TEXT,
+    funding_status       TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    cache_expires_at     TEXT NOT NULL,
+    data_sources_json    TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_company_profiles_name ON company_profiles(company_name);
+  CREATE INDEX IF NOT EXISTS idx_company_profiles_expires ON company_profiles(cache_expires_at);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_supabase_id ON users(supabase_user_id)
+  WHERE supabase_user_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS tailored_resumes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_url         TEXT NOT NULL,
+    base_resume_text TEXT NOT NULL,
+    tailored_resume_text TEXT NOT NULL,
+    job_title       TEXT NOT NULL DEFAULT '',
+    job_requirements_json TEXT,
+    bullets_included INTEGER,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(user_id, job_url)
+  );
+
+  CREATE TABLE IF NOT EXISTS cover_letters (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_url             TEXT NOT NULL,
+    company_profile_id  INTEGER,
+    company_name        TEXT NOT NULL DEFAULT '',
+    job_title           TEXT NOT NULL DEFAULT '',
+    content             TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    UNIQUE(user_id, job_url)
+  );
+
+  CREATE TABLE IF NOT EXISTS application_logs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_type      TEXT NOT NULL,
+    level           TEXT NOT NULL DEFAULT 'info',
+    message         TEXT NOT NULL,
+    error_details   TEXT,
+    retry_count     INTEGER DEFAULT 0,
+    created_at      TEXT NOT NULL
   );
 `);
 
@@ -337,5 +418,46 @@ try { db.exec(`ALTER TABLE users ADD COLUMN years_experience     TEXT NOT NULL D
 try { db.exec(`ALTER TABLE users ADD COLUMN ts_proficiency       TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN llm_frameworks       TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN additional_info      TEXT NOT NULL DEFAULT ''`); } catch {}
+
+// ── Application logging helpers ───────────────────────────────────────────────
+
+export interface ApplicationLogParams {
+  applicationId: number;
+  userId: number;
+  eventType: string;
+  level?: 'info' | 'warning' | 'error';
+  message: string;
+  errorDetails?: string | null;
+  retryCount?: number;
+}
+
+export function logApplicationEvent(params: ApplicationLogParams): void {
+  const { applicationId, userId, eventType, level = 'info', message, errorDetails = null, retryCount = 0 } = params;
+  db.prepare(`
+    INSERT INTO application_logs
+      (application_id, user_id, event_type, level, message, error_details, retry_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(applicationId, userId, eventType, level, message, errorDetails, retryCount, now());
+}
+
+export function getApplicationLogs(applicationId: number, limit = 100): Record<string, unknown>[] {
+  return db.prepare(`
+    SELECT id, event_type, level, message, error_details, retry_count, created_at
+    FROM application_logs
+    WHERE application_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(applicationId, limit) as Record<string, unknown>[];
+}
+
+export function getApplicationLastError(applicationId: number): Record<string, unknown> | null {
+  return db.prepare(`
+    SELECT event_type, message, error_details, created_at
+    FROM application_logs
+    WHERE application_id = ? AND level = 'error'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(applicationId) as Record<string, unknown> | null;
+}
 
 export { db };

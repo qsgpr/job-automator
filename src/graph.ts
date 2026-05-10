@@ -1,5 +1,5 @@
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
-import { ChatOllama } from '@langchain/ollama';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { JsonOutputParser, StringOutputParser } from '@langchain/core/output_parsers';
 import type { Analysis } from './types.js';
@@ -29,7 +29,7 @@ const EXTRACT_PROMPT = ChatPromptTemplate.fromMessages([
 ]);
 
 async function extractRequirements(state: State): Promise<Partial<State>> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, numCtx: 8192, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<{ requirements: string[]; nice_to_have: string[] }>();
   const chain = EXTRACT_PROMPT.pipe(llm).pipe(parser);
   const result = await chain.invoke({ jd: state.jd.slice(0, 5000) });
@@ -63,7 +63,7 @@ RESUME:
 ]);
 
 async function scoreResume(state: State): Promise<Partial<State>> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, numCtx: 16384, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<Omit<Analysis, 'requirements' | 'nice_to_have'>>();
   const chain = SCORE_PROMPT.pipe(llm).pipe(parser);
 

@@ -13,3 +13,5 @@ observability.db
 
 # debug artifacts
 debug_html.txt
+.env.server
+generate-*.js

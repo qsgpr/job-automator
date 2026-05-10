@@ -1,4 +1,4 @@
-import { ChatOllama } from '@langchain/ollama';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { readFile } from 'node:fs/promises';
@@ -44,7 +44,7 @@ export async function analyzeWithMetrics(
   const attempts: LlmAttemptMetric[] = [];
 
   // After cleanJobText the JD is much leaner; 6 k chars keeps even verbose
-  // postings intact while staying well within the 16 k numCtx window.
+  // postings intact while staying comfortably within the model's context window.
   const jd      = jobDescription.slice(0, 6000);
   const resumeT = resume.slice(0, 3000);
 
@@ -52,10 +52,7 @@ export async function analyzeWithMetrics(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const temperature = attempt === 0 ? 0 : 0.1;
-    // numCtx: default is often too small; think: false disables Gemma 4's
-    // reasoning tokens — @langchain/ollama puts `thinking` into response.content,
-    // which breaks JSON parsing.
-    const llm = new ChatOllama({ model: 'gemma4:26b', temperature, numCtx: 16384, think: false });
+    const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature, apiKey: process.env.GOOGLE_API_KEY });
     const t0 = performance.now();
 
     try {
@@ -64,12 +61,12 @@ export async function analyzeWithMetrics(
       const token_usage = extractTokenUsage(response as unknown as Record<string, unknown>);
       const parsed = await parser.parse(response.content as string);
 
-      attempts.push({ attempt: attempt + 1, tool_call: 'ollama:gemma4:26b', temperature, latency_ms, token_usage, error: null, retry_of: attempt > 0 ? attempt : null });
+      attempts.push({ attempt: attempt + 1, tool_call: 'google:gemini-2.5-flash', temperature, latency_ms, token_usage, error: null, retry_of: attempt > 0 ? attempt : null });
       recordAnalysisInput({ url, title: parsed.title, score: parsed.match_score, jdSent: jd });
       return [parsed, attempts];
     } catch (e) {
       const latency_ms = performance.now() - t0;
-      attempts.push({ attempt: attempt + 1, tool_call: 'ollama:gemma4:26b', temperature, latency_ms, token_usage: {}, error: String(e), retry_of: attempt > 0 ? attempt : null });
+      attempts.push({ attempt: attempt + 1, tool_call: 'google:gemini-2.5-flash', temperature, latency_ms, token_usage: {}, error: String(e), retry_of: attempt > 0 ? attempt : null });
 
       if (attempt === 0) {
         console.log('  (model returned invalid JSON — retrying with higher temperature...)');
@@ -152,7 +149,7 @@ Return ONLY valid JSON with exactly these fields (use empty string if not found)
 ]);
 
 export async function parseResume(resumeText: string): Promise<ContactInfo> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<ContactInfo>();
   const chain = RESUME_PARSE_PROMPT.pipe(llm).pipe(parser);
   try {
@@ -181,7 +178,7 @@ export async function generateCoverLetter(
   resume: string,
   skills = '',
 ): Promise<string> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0.3, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0.3, apiKey: process.env.GOOGLE_API_KEY });
   const chain = COVER_LETTER_PROMPT.pipe(llm);
   const result = await chain.invoke({ company, role, resume, skills: skills || 'relevant technical experience' });
   return (result.content as string).trim();
@@ -219,7 +216,7 @@ Rules:
 
 export async function mergeResumes(texts: string[]): Promise<string> {
   if (texts.length === 1) return texts[0].trim();
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const chain = CREATE_MASTER_PROMPT.pipe(llm);
   const resumes = texts.map((t, i) => `=== VERSION ${i + 1} ===\n${t.trim()}`).join('\n\n');
   const result = await chain.invoke({ resumes, count: texts.length });
@@ -227,7 +224,7 @@ export async function mergeResumes(texts: string[]): Promise<string> {
 }
 
 export async function diffResumes(master: string, newTexts: string[]): Promise<string> {
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const chain = DIFF_PROMPT.pipe(llm);
   const files = newTexts.map((t, i) => `=== FILE ${i + 1} ===\n${t.trim()}`).join('\n\n');
   const result = await chain.invoke({ master, files, divider: '─'.repeat(40) });

@@ -424,3 +424,176 @@ export function updateApplication(
 export function removeApplication(id: number, userId: number): void {
   db.prepare(`DELETE FROM applications WHERE id = ? AND user_id = ?`).run(id, userId);
 }
+
+// ── Tailored Resumes ──────────────────────────────────────────────────────────
+
+export interface TailoredResume {
+  id: number;
+  user_id: number;
+  job_url: string;
+  base_resume_text: string;
+  tailored_resume_text: string;
+  job_title: string;
+  job_requirements_json: string | null;
+  bullets_included: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToTailoredResume(row: Record<string, unknown>): TailoredResume {
+  return {
+    id: row.id as number,
+    user_id: row.user_id as number,
+    job_url: row.job_url as string,
+    base_resume_text: row.base_resume_text as string,
+    tailored_resume_text: row.tailored_resume_text as string,
+    job_title: row.job_title as string,
+    job_requirements_json: row.job_requirements_json as string | null,
+    bullets_included: row.bullets_included as number | null,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+  };
+}
+
+export function saveTailoredResume(
+  userId: number,
+  jobUrl: string,
+  baseResumeText: string,
+  tailoredResumeText: string,
+  jobTitle: string,
+  jobRequirements?: string[],
+  bulletsIncluded?: number,
+): TailoredResume {
+  const ts = now();
+  db.prepare(`
+    INSERT INTO tailored_resumes
+      (user_id, job_url, base_resume_text, tailored_resume_text, job_title,
+       job_requirements_json, bullets_included, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, job_url) DO UPDATE SET
+      tailored_resume_text = excluded.tailored_resume_text,
+      job_requirements_json = excluded.job_requirements_json,
+      bullets_included = excluded.bullets_included,
+      updated_at = excluded.updated_at
+  `).run(
+    userId,
+    jobUrl,
+    baseResumeText,
+    tailoredResumeText,
+    jobTitle,
+    jobRequirements ? JSON.stringify(jobRequirements) : null,
+    bulletsIncluded ?? null,
+    ts,
+    ts
+  );
+  const row = db.prepare(
+    `SELECT * FROM tailored_resumes WHERE user_id = ? AND job_url = ?`
+  ).get(userId, jobUrl) as Record<string, unknown>;
+  return rowToTailoredResume(row);
+}
+
+export function getTailoredResume(userId: number, jobUrl: string): TailoredResume | null {
+  const row = db.prepare(
+    `SELECT * FROM tailored_resumes WHERE user_id = ? AND job_url = ?`
+  ).get(userId, jobUrl) as Record<string, unknown> | undefined;
+  return row ? rowToTailoredResume(row) : null;
+}
+
+export function listTailoredResumes(userId: number): TailoredResume[] {
+  const rows = db.prepare(
+    `SELECT * FROM tailored_resumes WHERE user_id = ? ORDER BY created_at DESC`
+  ).all(userId) as Record<string, unknown>[];
+  return rows.map(rowToTailoredResume);
+}
+
+export function deleteTailoredResume(userId: number, jobUrl: string): void {
+  db.prepare(
+    `DELETE FROM tailored_resumes WHERE user_id = ? AND job_url = ?`
+  ).run(userId, jobUrl);
+}
+
+// ── Company Profiles (Research Agent) ──────────────────────────────────────
+
+import type { CompanyProfile, NewsItem } from './types.js';
+
+function rowToCompanyProfile(row: Record<string, unknown>): CompanyProfile {
+  return {
+    id: row.id as number,
+    company_name: row.company_name as string,
+    website: (row.website as string) || null,
+    description: (row.description as string) || null,
+    tech_stack: JSON.parse((row.tech_stack as string) || '[]'),
+    culture_signals: JSON.parse((row.culture_signals as string) || '[]'),
+    recent_news: JSON.parse((row.recent_news as string) || '[]'),
+    interview_talking_points: JSON.parse((row.interview_talking_points as string) || '[]'),
+    founded_year: (row.founded_year as number) || null,
+    employee_count: (row.employee_count as string) || null,
+    funding_status: (row.funding_status as string) || null,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+    cache_expires_at: row.cache_expires_at as string,
+    data_sources: JSON.parse((row.data_sources_json as string) || '{}'),
+  };
+}
+
+export function getCachedCompanyProfile(companyName: string): CompanyProfile | null {
+  const row = db.prepare(
+    `SELECT * FROM company_profiles WHERE company_name = ?`
+  ).get(companyName) as Record<string, unknown> | undefined;
+  return row ? rowToCompanyProfile(row) : null;
+}
+
+export function upsertCompanyProfile(profile: CompanyProfile): CompanyProfile {
+  const ts = now();
+  db.prepare(`
+    INSERT INTO company_profiles
+      (company_name, website, description, tech_stack, culture_signals,
+       recent_news, interview_talking_points, founded_year, employee_count,
+       funding_status, created_at, updated_at, cache_expires_at, data_sources_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_name) DO UPDATE SET
+      website = excluded.website,
+      description = excluded.description,
+      tech_stack = excluded.tech_stack,
+      culture_signals = excluded.culture_signals,
+      recent_news = excluded.recent_news,
+      interview_talking_points = excluded.interview_talking_points,
+      founded_year = excluded.founded_year,
+      employee_count = excluded.employee_count,
+      funding_status = excluded.funding_status,
+      updated_at = excluded.updated_at,
+      cache_expires_at = excluded.cache_expires_at,
+      data_sources_json = excluded.data_sources_json
+  `).run(
+    profile.company_name,
+    profile.website,
+    profile.description,
+    JSON.stringify(profile.tech_stack),
+    JSON.stringify(profile.culture_signals),
+    JSON.stringify(profile.recent_news),
+    JSON.stringify(profile.interview_talking_points),
+    profile.founded_year,
+    profile.employee_count,
+    profile.funding_status,
+    profile.created_at,
+    ts,
+    profile.cache_expires_at,
+    JSON.stringify(profile.data_sources),
+  );
+
+  const row = db.prepare(
+    `SELECT * FROM company_profiles WHERE company_name = ?`
+  ).get(profile.company_name) as Record<string, unknown>;
+  return rowToCompanyProfile(row);
+}
+
+export function deleteCompanyProfile(companyName: string): void {
+  db.prepare(`DELETE FROM company_profiles WHERE company_name = ?`).run(companyName);
+}
+
+export function listCompanyProfiles(): CompanyProfile[] {
+  const rows = db.prepare(
+    `SELECT * FROM company_profiles ORDER BY updated_at DESC`
+  ).all() as Record<string, unknown>[];
+  return rows.map(rowToCompanyProfile);
+}

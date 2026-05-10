@@ -8,13 +8,18 @@ import { scrapeJob, listJobs, findCareersUrl, searchCompanyUrls, ScraperError } 
 import { analyze, formatReport, generateCoverLetter, mergeResumes, diffResumes } from './analyzer.js';
 import { autofillForm } from './autofill.js';
 import { loadHistory, appendHistory, clearHistory, saveReport } from './history.js';
-import { getTimelineEvents, getSelectorReliability, getSelectorAlerts, getAnalysisInputs, getSetting, setSetting, getAllSettings } from './observability.js';
+import { getTimelineEvents, getSelectorReliability, getSelectorAlerts, getAnalysisInputs, getSetting, setSetting, getAllSettings, db } from './observability.js';
 import { storeJobEmbedding, findSimilarJobs, listStoredEmbeddings } from './embeddings.js';
 import { sendNtfy } from './notify.js';
 import { reloadScheduler } from './scheduler.js';
-import { createUser, listUsers, getUser, deleteUser, updateUserResume, updateUserContact, updateUserPreferences, listSites, addSite, updateSite, deleteSite, getCachedFeedJobsForUser, getCachedFeedJob, clearFeedJobAnalysis, clearAllFeedJobAnalyses, upsertFeedJob, listApplications, addApplication, updateApplication, removeApplication } from './profiles.js';
-import { autoApply } from './apply.js';
+import { createUser, listUsers, getUser, deleteUser, updateUserResume, updateUserContact, updateUserPreferences, listSites, addSite, updateSite, deleteSite, getCachedFeedJobsForUser, getCachedFeedJob, clearFeedJobAnalysis, clearAllFeedJobAnalyses, upsertFeedJob, listApplications, addApplication, updateApplication, removeApplication, saveTailoredResume, getTailoredResume, listTailoredResumes, deleteTailoredResume } from './profiles.js';
+import { autoApply, applyViaGreenhouseAPI } from './apply.js';
 import { runFeedScan, reanalyzeFeedJobs } from './feed.js';
+import { tailorResumeToJob } from './tailor.js';
+import { generateCoverLetterFromAnalysis, validateCoverLetter, saveCoverLetter, getCachedCoverLetter, getCoverLettersForUser } from './coverletter-agent.js';
+import { getCachedCompanyProfile, upsertCompanyProfile, listCompanyProfiles } from './profiles.js';
+import { authMiddleware, handleRegister } from './auth.js';
+import { seedDemoUser } from './seed.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -52,10 +57,34 @@ const PORT = Number(process.env.PORT ?? 3000);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(join(__dirname, '..', 'public')));
 
+// ── noVNC — serve static files + proxy websocket to VNC ──────────────────────
+if (process.env.DISPLAY) {
+  // Serve noVNC static files under /vnc/
+  app.use('/vnc', express.static('/usr/share/novnc'));
+
+  // Proxy websocket upgrade at /vnc/websockify → localhost:5900
+  const httpServer = app.listen; // will be used by server.on('upgrade') below
+}
+
+// ── Auth (public endpoints) ───────────────────────────────────────────────────
+
+app.post('/api/auth/register', handleRegister);
+
+// ── Protected Routes (iOS app only — require Supabase JWT) ───────────────────
+// Web UI routes (POST /api/users, GET /api/feed etc.) are intentionally public
+// so the local admin console works without authentication.
+app.use('/api/users/sync', authMiddleware);
+
 // ── Resume ────────────────────────────────────────────────────────────────────
 
-app.get('/api/resume', async (_req, res) => {
+app.get('/api/resume', async (req, res) => {
+  const userId = Number(req.query.userId ?? 0);
   try {
+    if (userId) {
+      const user = getUser(userId);
+      const content = user?.resume_text?.trim() ?? '';
+      return res.json({ content, found: !!content });
+    }
     const content = (await readFile('resume.txt', 'utf8')).trim();
     res.json({ content, found: true });
   } catch {
@@ -64,8 +93,14 @@ app.get('/api/resume', async (_req, res) => {
 });
 
 app.post('/api/resume', async (req, res) => {
+  const userId = Number(req.body.userId ?? 0);
+  const content = String(req.body.content ?? '').trim();
   try {
-    await writeFile('resume.txt', String(req.body.content ?? '').trim());
+    if (userId) {
+      updateUserResume(userId, content);
+      return res.json({ ok: true });
+    }
+    await writeFile('resume.txt', content);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -113,7 +148,7 @@ app.post('/api/analyze', async (req, res) => {
       return;
     }
 
-    emit({ type: 'progress', step: 3, of: 3, message: 'Analyzing with Gemma (30–60 s)…' });
+    emit({ type: 'progress', step: 3, of: 3, message: 'Analyzing with AI (30–60 s)…' });
     const analysis = await analyze(jd, resumeText, url);
     emit({ type: 'progress', step: 3, of: 3, message: 'Analysis complete', done: true });
 
@@ -237,10 +272,252 @@ app.post('/api/cover-letter', async (req, res) => {
   }
 });
 
+// ── Cover letter generation (Phase 5-6) ────────────────────────────────────
+
+/**
+ * POST /api/letters/generate
+ * Generate a cover letter for a specific job using analysis + company profile
+ */
+app.post('/api/letters/generate', async (req, res) => {
+  const { userId, jobUrl, companyProfileId } = req.body as {
+    userId: number;
+    jobUrl: string;
+    companyProfileId?: number;
+  };
+
+  if (!userId || !jobUrl) {
+    res.status(400).json({ error: 'userId and jobUrl are required' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+
+  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    const user = getUser(userId);
+    if (!user?.resume_text) {
+      emit({ type: 'error', message: 'No resume found for this user.' });
+      res.end();
+      return;
+    }
+
+    // Check cache first
+    emit({ type: 'progress', message: 'Checking cache...' });
+    const cached = getCachedCoverLetter(userId, jobUrl);
+    if (cached) {
+      emit({ type: 'progress', message: 'Found cached cover letter', done: true });
+      emit({ type: 'result', data: cached });
+      res.end();
+      return;
+    }
+
+    // Scrape and analyze the job
+    emit({ type: 'progress', message: 'Scraping job page...' });
+    const jobDescription = await scrapeJob(jobUrl);
+    emit({ type: 'progress', message: 'Analyzing job requirements...' });
+    const analysis = await analyze(jobDescription, user.resume_text, jobUrl);
+
+    // Get company profile if provided or try to infer from job
+    let companyProfile = null;
+    if (companyProfileId) {
+      emit({ type: 'progress', message: 'Loading company profile...' });
+      // Note: We need to fetch by name, so we'll infer from analysis
+      // In a full implementation, company_profiles table would store id and name
+    }
+
+    // Generate cover letter
+    emit({ type: 'progress', message: 'Generating cover letter...' });
+    const companyName = analysis.title?.split(' at ')?.[1] || 'the Company';
+    const letterContent = await generateCoverLetterFromAnalysis(
+      analysis.title || 'Role',
+      companyName,
+      companyProfile,
+      analysis,
+      user.resume_text,
+    );
+
+    // Validate quality
+    emit({ type: 'progress', message: 'Validating cover letter...' });
+    const validation = validateCoverLetter(letterContent, companyName);
+    if (!validation.valid) {
+      emit({ type: 'warning', message: `Quality checks: ${validation.issues.join('; ')}` });
+    }
+
+    // Save to cache
+    emit({ type: 'progress', message: 'Saving to cache...' });
+    const saved = saveCoverLetter(
+      userId,
+      jobUrl,
+      letterContent,
+      companyName,
+      analysis.title || 'Role',
+      companyProfileId,
+    );
+
+    emit({ type: 'progress', message: 'Cover letter generated successfully', done: true });
+    emit({ type: 'result', data: saved });
+  } catch (e) {
+    const status = e instanceof ScraperError ? 400 : 500;
+    emit({ type: 'error', message: String(e) });
+  }
+  res.end();
+});
+
+/**
+ * GET /api/letters
+ * Get all cached cover letters for a user
+ */
+app.get('/api/letters', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) {
+    res.status(400).json({ error: 'userId required' });
+    return;
+  }
+  try {
+    const letters = getCoverLettersForUser(userId);
+    res.json({ letters });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/**
+ * GET /api/letters/:jobUrl
+ * Get cached cover letter for a specific job
+ */
+app.get('/api/letters/:jobUrl', (req, res) => {
+  const userId = Number(req.query.userId);
+  const jobUrl = decodeURIComponent(req.params.jobUrl);
+  if (!userId) {
+    res.status(400).json({ error: 'userId query param required' });
+    return;
+  }
+  try {
+    const letter = getCachedCoverLetter(userId, jobUrl);
+    if (!letter) {
+      res.status(404).json({ error: 'Cover letter not found' });
+      return;
+    }
+    res.json({ letter });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ── Company profiles ───────────────────────────────────────────────────────────
+
+/**
+ * POST /api/research/company
+ * Create or update company profile
+ */
+app.post('/api/research/company', (req, res) => {
+  const { companyName, website, description, tech_stack, culture_signals, recent_news, interview_talking_points, founded_year, employee_count, funding_status, data_sources } = req.body as {
+    companyName: string;
+    website?: string;
+    description?: string;
+    tech_stack?: string[];
+    culture_signals?: string[];
+    recent_news?: Array<{ headline: string; date: string; url?: string }>;
+    interview_talking_points?: string[];
+    founded_year?: number;
+    employee_count?: string;
+    funding_status?: string;
+    data_sources?: Record<string, boolean>;
+  };
+
+  if (!companyName?.trim()) {
+    res.status(400).json({ error: 'companyName is required' });
+    return;
+  }
+
+  try {
+    const existing = getCachedCompanyProfile(companyName.trim());
+    const news = (recent_news || []).map((n: any) => ({
+      headline: n.headline || '',
+      date: n.date || '',
+      url: n.url || '',
+      source: n.source || '',
+    })) as any[];
+
+    const profile = upsertCompanyProfile({
+      id: existing?.id ?? 0,
+      company_name: companyName.trim(),
+      website: website ?? null,
+      description: description ?? null,
+      tech_stack: tech_stack ?? [],
+      culture_signals: culture_signals ?? [],
+      recent_news: news,
+      interview_talking_points: interview_talking_points ?? [],
+      founded_year: founded_year ?? null,
+      employee_count: employee_count ?? null,
+      funding_status: funding_status ?? null,
+      created_at: existing?.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      cache_expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      data_sources: data_sources ?? {},
+    });
+    res.json({ company_profile: profile });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/**
+ * GET /api/research/company/:name
+ * Get company profile by name
+ */
+app.get('/api/research/company/:name', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  try {
+    const profile = getCachedCompanyProfile(name);
+    if (!profile) {
+      res.status(404).json({ error: 'Company profile not found' });
+      return;
+    }
+    res.json({ company_profile: profile });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ── History ───────────────────────────────────────────────────────────────────
 
-app.get('/api/history', async (_req, res) => {
-  res.json(await loadHistory());
+app.get('/api/history', (req, res) => {
+  // Pull from persistent feed_jobs DB instead of ephemeral history.json
+  const userId = Number(req.query.userId ?? (req as any).user?.id ?? 0);
+  try {
+    const rows = userId
+      ? db.prepare(`
+          SELECT f.job_url AS url, f.job_title AS title, f.match_score AS score,
+                 f.first_seen AS date, s.name AS site_name
+          FROM feed_jobs f
+          LEFT JOIN job_sites s ON s.id = f.site_id
+          WHERE f.user_id = ? AND f.analysis_json IS NOT NULL
+          ORDER BY f.last_seen DESC LIMIT 200
+        `).all(userId) as any[]
+      : db.prepare(`
+          SELECT f.job_url AS url, f.job_title AS title, f.match_score AS score,
+                 f.first_seen AS date, s.name AS site_name
+          FROM feed_jobs f
+          LEFT JOIN job_sites s ON s.id = f.site_id
+          WHERE f.analysis_json IS NOT NULL
+          ORDER BY f.last_seen DESC LIMIT 200
+        `).all() as any[];
+
+    const history = rows.map(r => ({
+      date:    r.date?.replace('T', ' ').slice(0, 16) ?? '',
+      title:   r.title ?? '',
+      url:     r.url ?? '',
+      score:   r.score ?? null,
+      saved_to: null,
+    }));
+    res.json(history);
+  } catch {
+    res.json([]);
+  }
 });
 
 app.delete('/api/history', async (_req, res) => {
@@ -278,6 +555,8 @@ app.post('/api/resume/merge',
   }
 
   try {
+    const userId = Number(req.body.userId ?? 0);
+
     // Extract text from each file
     const texts: string[] = [];
     for (let i = 0; i < files.length; i++) {
@@ -291,24 +570,37 @@ app.post('/api/resume/merge',
       texts.push(text);
     }
 
-    // Load existing master
+    // Load existing master from user record
     let master = '';
-    try { master = (await readFile('resume.txt', 'utf8')).trim(); } catch {}
+    if (userId) {
+      const user = getUser(userId);
+      master = user?.resume_text?.trim() ?? '';
+    }
+    if (!master) {
+      try { master = (await readFile('resume.txt', 'utf8')).trim(); } catch {}
+    }
 
-    let additions = '';
+    const combined = texts.join('\n\n').trim();
     let updated = '';
+    let additions = '';
 
     if (!master) {
-      emit({ type: 'progress', message: texts.length > 1
-        ? `Merging ${texts.length} files into a master resume… (30–60 s)`
-        : 'Creating master resume…' });
-      updated = await mergeResumes(texts);
-      additions = updated;
+      // No existing master — save everything directly, no AI needed
+      emit({ type: 'progress', message: 'No existing resume found — saving uploaded content directly…' });
+      updated = combined;
+      additions = combined;
     } else {
-      emit({ type: 'progress', message: 'Comparing files against your master resume…' });
-      emit({ type: 'progress', message: 'Gemma is extracting new information… (30–60 s)' });
-      additions = await diffResumes(master, texts);
-      updated = additions ? `${master}\n\n${additions}` : master;
+      // Has existing master — use AI to merge: give it both resumes and produce a combined one
+      emit({ type: 'progress', message: 'Merging with your existing resume using AI… (30–60 s)' });
+      updated = await mergeResumes([master, combined]);
+      additions = updated !== master ? updated : '';
+    }
+
+    // Save to user record (always)
+    if (userId) {
+      updateUserResume(userId, updated);
+    } else {
+      await writeFile('resume.txt', updated);
     }
 
     emit({ type: 'result', additions, updated, had_master: !!master, filenames: files.map(f => f.originalname) });
@@ -375,6 +667,31 @@ app.put('/api/users/:id/preferences', (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+app.post('/api/users/sync', async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
+    const { email, name, resume_text, phone, linkedin } = req.body;
+
+    // Update user profile with synced data from NotchUp
+    if (name) updateUserContact(user.id, { name });
+    if (email) updateUserContact(user.id, { email });
+    if (resume_text) updateUserResume(user.id, resume_text);
+    if (phone) updateUserContact(user.id, { phone });
+    if (linkedin) updateUserContact(user.id, { linkedin });
+
+    const updatedUser = getUser(user.id);
+    res.json({
+      id: user.id,
+      synced_at: new Date().toISOString(),
+      user: updatedUser,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ── Job sites ─────────────────────────────────────────────────────────────────
 
 app.get('/api/sites', (_req, res) => res.json(listSites()));
@@ -406,10 +723,52 @@ app.get('/api/feed/cached', (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ── iOS App: GET /api/jobs/feed ───────────────────────────────────────────────
+// Used by NotchUp iOS. Resolves userId from Supabase JWT, returns jobs in the
+// format the Swift Codable structs expect.
+app.get('/api/jobs/feed', authMiddleware, (req: any, res) => {
+  const user = req.user;
+  if (!user) { res.status(401).json({ error: 'Not authenticated' }); return; }
+
+  const limit  = Number(req.query.limit  ?? 50);
+  const offset = Number(req.query.offset ?? 0);
+
+  try {
+    const all = getCachedFeedJobsForUser(user.id);
+    const page = all.slice(offset, offset + limit);
+
+    const jobs = page
+      .filter(j => j.analysis !== null)
+      .map(j => ({
+        id:               String(j.id),
+        url:              j.job.url,
+        title:            j.job.title,
+        company:          j.site_name,
+        location:         j.job.location ?? '',
+        department:       j.job.department ?? null,
+        match_score:      j.match_score ?? j.analysis?.match_score ?? 0,
+        requirements:     j.analysis?.requirements ?? [],
+        strengths:        j.analysis?.strengths    ?? [],
+        gaps:             j.analysis?.gaps         ?? [],
+        summary:          j.analysis?.summary      ?? '',
+        company_profile_id: null,
+      }));
+
+    res.json({ jobs, total: all.length, limit, offset });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ── Auto-apply (streaming NDJSON) ────────────────────────────────────────────
 
 app.post('/api/apply', async (req, res) => {
-  const { userId, jobUrl } = req.body as { userId: number; jobUrl: string };
+  const { userId, jobUrl, coverLetter, applicationId } = req.body as {
+    userId: number;
+    jobUrl: string;
+    coverLetter?: string;
+    applicationId?: number;
+  };
   if (!userId || !jobUrl) { res.status(400).json({ error: 'userId and jobUrl are required' }); return; }
 
   res.setHeader('Content-Type', 'application/x-ndjson');
@@ -419,11 +778,126 @@ app.post('/api/apply', async (req, res) => {
   const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
 
   try {
-    await autoApply(Number(userId), jobUrl, emit);
+    // If applicationId not provided, create an application record
+    let appId = applicationId;
+    if (!appId) {
+      const user = getUser(userId);
+      if (!user) {
+        emit({ type: 'error', message: 'User not found' });
+        res.end();
+        return;
+      }
+      const app = addApplication(userId, jobUrl, '', '', null);
+      appId = app.id;
+    }
+
+    await autoApply(Number(userId), jobUrl, coverLetter, appId, emit);
   } catch (e) {
     emit({ type: 'error', message: String(e) });
   }
   res.end();
+});
+
+// ── Direct API apply (Greenhouse — no browser, no captcha) ───────────────────
+
+app.post('/api/apply-direct', async (req, res) => {
+  const { userId, jobUrl, atsType, atsSlug, coverLetter } = req.body as {
+    userId:      number;
+    jobUrl:      string;
+    atsType?:    string;
+    atsSlug?:    string;
+    coverLetter?: string;
+  };
+
+  if (!userId || !jobUrl) {
+    res.status(400).json({ error: 'userId and jobUrl are required' });
+    return;
+  }
+
+  // Only Greenhouse is supported via direct API right now
+  const normalizedType = (atsType ?? '').toLowerCase();
+  const isGreenhouse   =
+    normalizedType === 'greenhouse' ||
+    jobUrl.includes('greenhouse.io');
+
+  if (!isGreenhouse) {
+    res.status(400).json({
+      error: `Direct API submission is only supported for Greenhouse. atsType received: "${atsType ?? ''}". Use /api/apply for other ATS.`,
+    });
+    return;
+  }
+
+  try {
+    const result = await applyViaGreenhouseAPI({
+      userId:      Number(userId),
+      jobUrl,
+      atsSlug,
+      coverLetter,
+    });
+
+    if (result.submitted) {
+      res.json({ submitted: true, applicationId: result.applicationId ?? null });
+    } else {
+      res.status(422).json({ submitted: false, error: result.error, statusCode: result.statusCode });
+    }
+  } catch (e) {
+    res.status(500).json({ submitted: false, error: String(e) });
+  }
+});
+
+// ── Application resume (after captcha user intervention) ──────────────────────
+
+app.post('/api/applications/:id/resume', async (req, res) => {
+  const { id } = req.params;
+  const applicationId = Number(id);
+
+  if (!applicationId || isNaN(applicationId)) {
+    res.status(400).json({ error: 'Invalid application ID' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+
+  const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    // TODO: Resume the browser automation after user has solved captcha
+    emit({ type: 'debug', message: 'Resume endpoint called for application ' + applicationId });
+    emit({ type: 'debug', message: 'Feature: auto-resume after captcha will be implemented in next iteration' });
+    res.json({ status: 'resumed', message: 'Application automation resumed (manual verification required)' });
+  } catch (e) {
+    emit({ type: 'error', message: String(e) });
+  }
+  res.end();
+});
+
+// ── Get application status with logs ──────────────────────────────────────────
+
+app.get('/api/applications/:id/status', async (req, res) => {
+  const { id } = req.params;
+  const applicationId = Number(id);
+
+  if (!applicationId || isNaN(applicationId)) {
+    res.status(400).json({ error: 'Invalid application ID' });
+    return;
+  }
+
+  try {
+    const { getApplicationLogs, getApplicationLastError } = await import('./observability.js');
+    const logs = getApplicationLogs(applicationId, 50);
+    const lastError = getApplicationLastError(applicationId);
+
+    res.json({
+      id: applicationId,
+      logs,
+      lastError,
+      status: lastError ? 'failed' : 'running',
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // ── Feed scan (streaming NDJSON) ──────────────────────────────────────────────
@@ -531,6 +1005,99 @@ app.post('/api/settings/test-ntfy', async (req, res) => {
   }
 });
 
+// ── Tailored Resumes ─────────────────────────────────────────────────────────
+
+app.post('/api/resumes/tailor', async (req, res) => {
+  const { userId, jobUrl, jobDescription } = req.body as {
+    userId: number;
+    jobUrl: string;
+    jobDescription?: string;
+  };
+
+  if (!userId || !jobUrl) {
+    res.status(400).json({ error: 'userId and jobUrl are required' });
+    return;
+  }
+
+  try {
+    // Get the user's base resume
+    const user = getUser(userId);
+    if (!user || !user.resume_text) {
+      res.status(400).json({ error: 'User has no resume on file' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.flushHeaders();
+
+    const emit = (obj: object) => res.write(JSON.stringify(obj) + '\n');
+
+    emit({ type: 'progress', step: 1, of: 2, message: 'Analyzing job requirements...' });
+
+    // Tailor the resume
+    const { tailoredResume, analysis, bulletsIncluded } = await tailorResumeToJob(
+      user.resume_text,
+      jobUrl,
+      jobDescription
+    );
+
+    emit({
+      type: 'progress',
+      step: 2,
+      of: 2,
+      message: `Tailored resume ready (${bulletsIncluded} bullets)`,
+      done: true
+    });
+
+    // Save the tailored resume
+    const saved = saveTailoredResume(
+      userId,
+      jobUrl,
+      user.resume_text,
+      tailoredResume,
+      analysis.title,
+      analysis.requirements,
+      bulletsIncluded
+    );
+
+    emit({
+      type: 'done',
+      tailored_resume_id: saved.id,
+      tailored_resume_text: saved.tailored_resume_text,
+      job_title: saved.job_title,
+      bullets_included: saved.bullets_included,
+      match_score: analysis.match_score,
+      requirements: analysis.requirements,
+      created_at: saved.created_at
+    });
+  } catch (e) {
+    res.write(JSON.stringify({ type: 'error', message: String(e) }) + '\n');
+  }
+});
+
+app.get('/api/resumes/tailored', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  res.json(listTailoredResumes(userId));
+});
+
+app.get('/api/resumes/tailored/:jobUrl', (req, res) => {
+  const userId = Number(req.query.userId);
+  const jobUrl = decodeURIComponent(req.params.jobUrl);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  const tailored = getTailoredResume(userId, jobUrl);
+  tailored ? res.json(tailored) : res.status(404).json({ error: 'Not found' });
+});
+
+app.delete('/api/resumes/tailored/:jobUrl', (req, res) => {
+  const userId = Number(req.query.userId);
+  const jobUrl = decodeURIComponent(req.params.jobUrl);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  deleteTailoredResume(userId, jobUrl);
+  res.json({ ok: true });
+});
+
 // ── Applications (kanban board) ───────────────────────────────────────────────
 
 app.get('/api/applications', (req, res) => {
@@ -570,7 +1137,108 @@ app.delete('/api/applications/:id', (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 reloadScheduler();
+seedDemoUser();
 
 app.listen(PORT, () => {
   console.log(`\nJob Automator → http://localhost:${PORT}\n`);
+});
+
+// ── Research Agent ────────────────────────────────────────────────────────────
+
+app.post('/api/research/company', async (req, res) => {
+  const { company_name, website, refresh } = req.body as {
+    company_name: string;
+    website?: string;
+    refresh?: boolean;
+  };
+
+  if (!company_name) {
+    res.status(400).json({ error: 'company_name required' });
+    return;
+  }
+
+  try {
+    const { getOrResearchCompany } = await import('./research.js');
+    const profile = await getOrResearchCompany(
+      company_name,
+      website,
+      refresh ?? false
+    );
+
+    res.json({
+      company_profile_id: profile.id,
+      company_name: profile.company_name,
+      website: profile.website ?? null,
+      description: profile.description ?? null,
+      tech_stack: profile.tech_stack ?? [],
+      culture_signals: profile.culture_signals ?? [],
+      recent_news: (profile.recent_news ?? []).map((n: any) => ({
+        headline: n.headline,
+        date: n.date,
+        url: n.url ?? '',
+        source: n.source ?? '',
+      })),
+      interview_talking_points: profile.interview_talking_points ?? [],
+      founded_year: profile.founded_year ?? null,
+      employee_count: profile.employee_count ?? null,
+      funding_status: profile.funding_status ?? null,
+      created_at: profile.created_at,
+      is_fresh: new Date(profile.cache_expires_at) > new Date(),
+    });
+  } catch (e) {
+    console.error('Research error:', String(e));
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/research/company/:name', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const profile = getCachedCompanyProfile(name);
+
+  if (!profile) {
+    res.status(404).json({ error: 'Company not found' });
+    return;
+  }
+
+  const expiresAt = new Date(profile.cache_expires_at);
+  const isFresh = expiresAt > new Date();
+
+  res.json({
+    company_profile: {
+      company_profile_id: profile.id,
+      company_name: profile.company_name,
+      website: profile.website ?? null,
+      description: profile.description ?? null,
+      tech_stack: profile.tech_stack ?? [],
+      culture_signals: profile.culture_signals ?? [],
+      recent_news: (profile.recent_news ?? []).map((n: any) => ({
+        headline: n.headline,
+        date: n.date,
+        url: n.url ?? '',
+        source: n.source ?? '',
+      })),
+      interview_talking_points: profile.interview_talking_points ?? [],
+      founded_year: profile.founded_year ?? null,
+      employee_count: profile.employee_count ?? null,
+      funding_status: profile.funding_status ?? null,
+      created_at: profile.created_at,
+    },
+    cached_at: profile.updated_at,
+    is_fresh: isFresh,
+    cache_expires_at: profile.cache_expires_at,
+  });
+});
+
+app.get('/api/research/companies', (req, res) => {
+  const profiles = listCompanyProfiles();
+  res.json({
+    companies: profiles.map(p => ({
+      company_profile_id: p.id,
+      company_name: p.company_name,
+      website: p.website,
+      created_at: p.created_at,
+      is_fresh: new Date(p.cache_expires_at) > new Date(),
+    })),
+    total: profiles.length,
+  });
 });

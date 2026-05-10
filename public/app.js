@@ -1,3 +1,420 @@
+// ── Supabase auth ─────────────────────────────────────────────────────────────
+
+const SUPABASE_URL  = 'https://kpjjwqarfuanxfgklmtm.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtwamp3cWFyZnVhbnhmZ2tsbXRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5OTc2NTAsImV4cCI6MjA5MTU3MzY1MH0.klZezIOEZwo4lWUmt8dPvU1FLPtkcHuAM8Rs5PbVWOU';
+
+if (!window.supabase) {
+  console.error('Supabase CDN failed to load. Check network/CSP.');
+}
+const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ── Global onclick handlers (called directly from HTML attributes) ─────────────
+
+let _loginMode = 'signin';
+
+function toggleLoginMode() {
+  _loginMode = _loginMode === 'signin' ? 'signup' : 'signin';
+  const btn       = document.getElementById('login-submit-btn');
+  const toggleBtn = document.getElementById('login-toggle-btn');
+  const toggleTxt = document.getElementById('login-toggle-text');
+  if (btn)       btn.textContent       = _loginMode === 'signin' ? 'Sign In' : 'Create Account';
+  if (toggleTxt) toggleTxt.textContent = _loginMode === 'signin' ? "Don't have an account?" : 'Already have an account?';
+  if (toggleBtn) toggleBtn.textContent = _loginMode === 'signin' ? 'Sign up' : 'Sign in';
+  _setLoginError('');
+}
+
+function _setLoginError(msg) {
+  const el = document.getElementById('login-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
+async function handleLoginSubmit() {
+  const email = document.getElementById('login-email')?.value.trim();
+  const pw    = document.getElementById('login-password')?.value;
+  if (!email || !pw) { _setLoginError('Please enter your email and password.'); return; }
+
+  const btn = document.getElementById('login-submit-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
+  _setLoginError('');
+
+  try {
+    let session;
+    if (_loginMode === 'signin') {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password: pw });
+      if (error) throw new Error(error.message);
+      session = data.session;
+    } else {
+      const { data, error } = await supabaseClient.auth.signUp({ email, password: pw });
+      if (error) throw new Error(error.message);
+      session = data.session;
+      if (!session) {
+        _setLoginError('Check your email to confirm your account, then sign in.');
+        if (btn) { btn.disabled = false; btn.textContent = 'Create Account'; }
+        return;
+      }
+    }
+    if (session) await onSessionReady(session);
+  } catch (e) {
+    _setLoginError(e.message || 'Authentication failed');
+    if (btn) { btn.disabled = false; btn.textContent = _loginMode === 'signin' ? 'Sign In' : 'Create Account'; }
+  }
+}
+
+async function handleDemoLogin() {
+  const btn = document.getElementById('login-demo-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading demo…'; }
+  _setLoginError('');
+  try {
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email: 'demo@notchup.app', password: 'Demo1234!' });
+    if (error) throw new Error(error.message);
+    if (data.session) await onSessionReady(data.session);
+    else _setLoginError('Demo login failed. Please try again.');
+  } catch (e) {
+    _setLoginError('Demo unavailable: ' + (e.message || 'unknown error'));
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = '✨ Try Demo'; }
+}
+
+// Return the current access token (or null)
+async function getAccessToken() {
+  const { data } = await supabaseClient.auth.getSession();
+  return data.session?.access_token ?? null;
+}
+
+// Authenticated fetch — adds Authorization header when a session exists
+async function authFetch(url, options = {}) {
+  const token = await getAccessToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(url, { ...options, headers });
+}
+
+// Auth actions
+async function signIn(email, password) {
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+async function signUp(email, password) {
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+async function signOut() {
+  await supabaseClient.auth.signOut();
+  activeUserId = null;
+  showLoginScreen();
+}
+
+async function loginAsDemo() {
+  return signIn('demo@notchup.app', 'Demo1234!');
+}
+
+// Register the Supabase user with the Job Automator backend
+async function registerWithBackend(session) {
+  const user = session.user;
+  const name = user.user_metadata?.full_name
+             || user.email?.split('@')[0]
+             || 'User';
+  try {
+    const res  = await authFetch('/api/auth/register', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ supabase_user_id: user.id, email: user.email, name }),
+    });
+    const data = await res.json();
+    if (data.job_automator_user_id) {
+      activeUserId = data.job_automator_user_id;
+    }
+  } catch (e) {
+    console.error('registerWithBackend failed:', e);
+  }
+}
+
+// ── Login screen logic ────────────────────────────────────────────────────────
+
+let loginMode = 'signin'; // 'signin' | 'signup'
+
+function showLoginScreen() {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app').style.display = 'none';
+}
+
+function showAppScreen() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app').style.display = '';
+}
+
+function setLoginError(msg) { _setLoginError(msg); }
+
+function initLoginScreen() {
+  // Handlers are now wired via onclick attributes in HTML — nothing to do here.
+  const submitBtn  = null;
+  const demoBtn    = null;
+  const toggleBtn  = null;
+  const toggleText = null;
+  const emailInput = null;
+  const pwInput    = null;
+  return; // skip old event-listener wiring
+
+  toggleBtn.addEventListener('click', () => {
+    loginMode = loginMode === 'signin' ? 'signup' : 'signin';
+    submitBtn.textContent = loginMode === 'signin' ? 'Sign In' : 'Create Account';
+    toggleText.textContent = loginMode === 'signin' ? "Don't have an account?" : 'Already have an account?';
+    toggleBtn.textContent  = loginMode === 'signin' ? 'Sign up' : 'Sign in';
+    setLoginError('');
+  });
+
+  async function handleSubmit() {
+    const email    = emailInput.value.trim();
+    const password = pwInput.value;
+    if (!email || !password) { setLoginError('Please enter your email and password.'); return; }
+
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span>';
+    setLoginError('');
+
+    try {
+      let session;
+      if (loginMode === 'signin') {
+        const data = await signIn(email, password);
+        session = data.session;
+      } else {
+        const data = await signUp(email, password);
+        session = data.session;
+        if (!session) {
+          // Email confirmation required
+          setLoginError('Check your email to confirm your account, then sign in.');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Create Account';
+          return;
+        }
+      }
+      if (session) await onSessionReady(session);
+    } catch (e) {
+      setLoginError(e.message || 'Authentication failed');
+      submitBtn.disabled = false;
+      submitBtn.textContent = loginMode === 'signin' ? 'Sign In' : 'Create Account';
+    }
+  }
+
+  submitBtn.addEventListener('click', handleSubmit);
+  pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleSubmit(); });
+
+  demoBtn.addEventListener('click', async () => {
+    demoBtn.disabled = true;
+    demoBtn.innerHTML = '<span class="spinner"></span> Loading demo…';
+    setLoginError('');
+    try {
+      const data = await loginAsDemo();
+      if (data.session) await onSessionReady(data.session);
+      else setLoginError('Demo login failed. Please try signing in manually.');
+    } catch (e) {
+      setLoginError(e.message || 'Demo login failed');
+    }
+    demoBtn.disabled = false;
+    demoBtn.innerHTML = 'Try Demo';
+  });
+}
+
+async function onSessionReady(session) {
+  // Register with backend — this sets activeUserId to the correct user
+  await registerWithBackend(session);
+
+  // Show logged-in user in sidebar
+  const name  = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
+  const email = session.user.email ?? '';
+  updateSidebarUser(name, email);
+
+  showAppScreen();
+
+  // Persist activeUserId to localStorage so it survives page reloads
+  if (activeUserId) localStorage.setItem('activeUserId', String(activeUserId));
+
+  // Start on dashboard — set greeting with user name
+  _setDashGreeting(name);
+
+  // Load dashboard data
+  loadDashboard();
+  if (window._loadResumeMaster) window._loadResumeMaster();
+}
+
+function _setDashGreeting(name) {
+  const greetEl = document.getElementById('dash-greeting');
+  const titleEl = document.getElementById('dash-hero-title');
+  const hour = new Date().getHours();
+  const timeGreet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const first = name ? name.split(' ')[0] : null;
+  if (greetEl) greetEl.textContent = first ? `${timeGreet}, ${first}` : timeGreet;
+  if (titleEl) titleEl.textContent = 'Your AI Job Search';
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+async function loadDashboard() {
+  if (!activeUserId) return;
+
+  // Update stat placeholders immediately
+  ['dash-stat-total', 'dash-stat-matches', 'dash-stat-apps'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '<span class="spinner-sm" style="vertical-align:middle"></span>';
+  });
+
+  try {
+    const [cached, apps, sites, resumeData] = await Promise.all([
+      api.get(`/api/feed/cached?userId=${activeUserId}`).catch(() => []),
+      api.get(`/api/applications?userId=${activeUserId}`).catch(() => []),
+      api.get('/api/sites').catch(() => []),
+      api.get(activeUserId ? `/api/resume?userId=${activeUserId}` : '/api/resume').catch(() => ({})),
+    ]);
+
+    const cachedArr   = Array.isArray(cached) ? cached : [];
+    const appsArr     = Array.isArray(apps)   ? apps   : [];
+    const sitesArr    = Array.isArray(sites)  ? sites  : [];
+
+    const total       = cachedArr.length;
+    const highMatches = cachedArr.filter(j => (j.match_score ?? 0) >= 70).length;
+    const appCount    = appsArr.length;
+    const activeSites = sitesArr.filter(s => s.active).length;
+    const hasResume   = !!(resumeData?.content?.trim());
+
+    // Update stats
+    _animateCount('dash-stat-total',   total);
+    _animateCount('dash-stat-matches', highMatches);
+    _animateCount('dash-stat-apps',    appCount);
+
+    // Setup checklist
+    const needsResume = !hasResume;
+    const needsSites  = activeSites === 0;
+    const needsScan   = total === 0;
+    const showChecklist = needsResume || needsSites || needsScan;
+    const checklistEl = document.getElementById('dash-checklist');
+    const stepsEl     = document.getElementById('dash-steps');
+
+    if (checklistEl && stepsEl) {
+      checklistEl.style.display = showChecklist ? '' : 'none';
+      if (showChecklist) {
+        const steps = [
+          {
+            num: 1,
+            name: 'Upload your resume',
+            hint: 'Used to score every job match',
+            done: !needsResume,
+            action: !needsResume ? null : { label: 'Go to Resume', tab: 'resume' },
+          },
+          {
+            num: 2,
+            name: 'Add job sites',
+            hint: 'Tell us where to scan for openings',
+            done: !needsSites,
+            action: !needsSites ? null : { label: 'Go to Settings', tab: 'observe' },
+          },
+          {
+            num: 3,
+            name: 'Run your first scan',
+            hint: 'AI scores every job against your profile',
+            done: !needsScan,
+            action: !needsScan ? null : { label: 'Start Scan', scan: true },
+          },
+        ];
+
+        stepsEl.innerHTML = steps.map(s => `
+          <div class="dash-step${s.done ? ' done' : ''}">
+            <div class="dash-step-num">${s.done ? ICON_CHECK : s.num}</div>
+            <div class="dash-step-info">
+              <div class="dash-step-name">${esc(s.name)}</div>
+              <div class="dash-step-hint">${esc(s.hint)}</div>
+            </div>
+            ${s.action ? `
+              <div class="dash-step-action">
+                ${s.action.scan
+                  ? `<button class="btn btn-primary btn-sm dash-step-scan-btn">Start Scan</button>`
+                  : `<button class="btn btn-secondary btn-sm" data-tab="${s.action.tab}">${esc(s.action.label)}</button>`
+                }
+              </div>` : ''}
+          </div>`).join('');
+
+        stepsEl.querySelectorAll('.dash-step-scan-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            switchTab('feed');
+            setTimeout(() => document.getElementById('feed-scan-btn')?.click(), 150);
+          });
+        });
+      }
+    }
+
+    // Top 3 matches
+    const top3 = cachedArr
+      .filter(j => j.analysis)
+      .sort((a, b) => (b.match_score ?? 0) - (a.match_score ?? 0))
+      .slice(0, 3);
+
+    const matchesSection = document.getElementById('dash-matches-section');
+    const matchesEl      = document.getElementById('dash-top-matches');
+
+    if (matchesSection && matchesEl) {
+      if (top3.length === 0) {
+        matchesSection.style.display = 'none';
+      } else {
+        matchesSection.style.display = '';
+        matchesEl.innerHTML = top3.map(j => {
+          const score    = j.match_score ?? 0;
+          const cls      = scoreBadgeClass(score);
+          const company  = j.site_name || 'Unknown';
+          const role     = j.job?.title || '—';
+          const strengths = (j.analysis?.strengths || []).slice(0, 2);
+          return `
+            <div class="dash-match-card">
+              <div class="dash-match-info">
+                <div class="dash-match-company">${esc(company)}</div>
+                <div class="dash-match-role">${esc(role)}</div>
+                ${strengths.length ? `
+                <div class="dash-match-tags">
+                  ${strengths.map(s => `<span class="tag">${esc(s.length > 32 ? s.slice(0,32)+'…' : s)}</span>`).join('')}
+                </div>` : ''}
+              </div>
+              <div class="dash-score-badge ${cls}">${score}</div>
+              <div class="dash-match-actions">
+                <a class="btn btn-primary btn-sm" href="${esc(j.job?.url || '#')}" target="_blank" rel="noopener">Apply Now</a>
+                <button class="btn btn-secondary btn-sm dash-view-detail-btn" data-url="${esc(j.job?.url || '')}">Details</button>
+              </div>
+            </div>`;
+        }).join('');
+      }
+    }
+
+    // Big scan button visibility
+    const dashScanBtn = document.getElementById('dash-scan-btn');
+    if (dashScanBtn) {
+      dashScanBtn.style.display = activeSites > 0 ? '' : 'none';
+      dashScanBtn.onclick = () => {
+        switchTab('feed');
+        setTimeout(() => document.getElementById('feed-scan-btn')?.click(), 150);
+      };
+    }
+
+  } catch (e) {
+    console.error('loadDashboard error:', e);
+  }
+}
+
+function _animateCount(id, target) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (target === 0) { el.textContent = '0'; return; }
+  let cur = 0;
+  const step = Math.ceil(target / 20);
+  const interval = setInterval(() => {
+    cur = Math.min(cur + step, target);
+    el.textContent = cur;
+    if (cur >= target) clearInterval(interval);
+  }, 30);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const ICON_CHECK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
@@ -30,20 +447,42 @@ function toast(msg, type = 'success') {
   setTimeout(() => t.remove(), 3000);
 }
 
+function getInitials(name) {
+  if (!name) return '?';
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map(w => w[0]?.toUpperCase() ?? '')
+    .join('');
+}
+
+function updateSidebarUser(name, email) {
+  const avatarEl = document.getElementById('sidebar-avatar');
+  const nameEl   = document.getElementById('sidebar-user-name');
+  const emailEl  = document.getElementById('sidebar-user-email');
+  if (avatarEl) avatarEl.textContent = getInitials(name || email || '');
+  if (nameEl)   nameEl.textContent   = name  || '';
+  if (emailEl)  emailEl.textContent  = email || '';
+}
+
 // ── API ───────────────────────────────────────────────────────────────────────
 
 const api = {
-  get:    path       => fetch(path).then(r => r.json()),
-  post:   (path, b)  => fetch(path, { method: 'POST',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
-  patch:  (path, b)  => fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
-  delete: path       => fetch(path, { method: 'DELETE' }).then(r => r.json()),
+  get:    path       => authFetch(path).then(r => r.json()),
+  post:   (path, b)  => authFetch(path, { method: 'POST',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  patch:  (path, b)  => authFetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  delete: path       => authFetch(path, { method: 'DELETE' }).then(r => r.json()),
 
   async stream(path, body, onEvent, signal) {
     let res;
     try {
+      const token = await getAccessToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
       res = await fetch(path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal,
       });
@@ -86,17 +525,65 @@ function setResumeBadge(badge, content, found) {
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
+function switchTab(tab) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
+  // Sync mobile bottom nav
+  document.querySelectorAll('.mobile-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  // Close sidebar drawer on mobile after navigation
+  _mobileCloseSidebar();
+  if (tab === 'history')   loadHistory();
+  if (tab === 'observe')   loadObservability();
+  if (tab === 'feed')      refreshFeedTab();
+  if (tab === 'profile')   loadProfileTab();
+  if (tab === 'board')     loadBoard();
+  if (tab === 'dashboard') loadDashboard();
+}
+
 function initTabs() {
+  // Primary nav buttons
   document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tab = btn.dataset.tab;
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
-      document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
-      if (tab === 'history') loadHistory();
-      if (tab === 'observe') loadObservability();
-      if (tab === 'feed')    refreshFeedTab();
-      if (tab === 'profile') loadProfileTab();
-      if (tab === 'board')   loadBoard();
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // Mobile bottom nav buttons
+  document.querySelectorAll('.mobile-nav-item').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // Mobile hamburger: opens the sidebar drawer
+  document.getElementById('mobile-hamburger-btn')?.addEventListener('click', () => {
+    _mobileOpenSidebar();
+  });
+
+  // Tap overlay to close
+  document.getElementById('mobile-sidebar-overlay')?.addEventListener('click', () => {
+    _mobileCloseSidebar();
+  });
+
+  // Dashboard "View all" button and any other data-tab anchors
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('[data-tab]');
+    if (!btn || btn.classList.contains('nav-btn')) return;
+    const tab = btn.dataset.tab;
+    if (tab) switchTab(tab);
+  });
+
+  // Tools flyout toggle
+  const toolsBtn   = document.getElementById('nav-tools-btn');
+  const toolsFlyout = document.getElementById('nav-tools-flyout');
+  toolsBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    toolsFlyout?.classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => toolsFlyout?.classList.add('hidden'));
+
+  // Flyout items
+  document.querySelectorAll('.nav-flyout-item').forEach(item => {
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      toolsFlyout?.classList.add('hidden');
+      switchTab(item.dataset.tab);
     });
   });
 }
@@ -107,7 +594,7 @@ function buildStepperHTML() {
   const steps = [
     { name: 'Load resume',    hint: 'resume.txt' },
     { name: 'Scrape page',    hint: 'Playwright Chrome' },
-    { name: 'Analyze',        hint: 'Gemma 4 26B · 30–60 s' },
+    { name: 'Analyze',        hint: 'AI analysis · 30–60 s' },
   ];
   const items = steps.map((s, i) => `
     <div class="step-item">
@@ -599,7 +1086,7 @@ function initCoverTab() {
     resultEl.innerHTML = `
       <div class="card" style="min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
         <span class="spinner-sm"></span>
-        <span style="font-size:12px;color:var(--text-muted)">Gemma is writing your cover letter… 20–40 seconds</span>
+        <span style="font-size:12px;color:var(--text-muted)">AI is writing your cover letter… 20–40 seconds</span>
       </div>`;
     resultEl.classList.remove('hidden');
 
@@ -682,11 +1169,16 @@ async function loadHistory() {
   const container = document.getElementById('history-content');
   container.innerHTML = `<div class="empty-state"><span class="spinner-sm"></span></div>`;
 
-  const history = await api.get('/api/history');
+  const history = await api.get(`/api/history${activeUserId ? '?userId=' + activeUserId : ''}`);
   const rows = [...history].reverse();
 
   if (!rows.length) {
-    container.innerHTML = `<div class="empty-state">No jobs analyzed yet.<br>Use the Analyze tab to get started.</div>`;
+    container.innerHTML = `
+      <div class="empty-state-wrap">
+        <div class="empty-state-icon">📅</div>
+        <div class="empty-state-title">No scan history yet</div>
+        <div class="empty-state-sub">Run your first scan to see results here</div>
+      </div>`;
     return;
   }
 
@@ -747,6 +1239,18 @@ function renderBoard(apps) {
   if (!board) return;
   board.innerHTML = '';
 
+  // Full-board empty state when there are no applications at all
+  if (!apps.length) {
+    board.innerHTML = `
+      <div class="empty-board-wrap">
+        <div class="empty-board-icon">📋</div>
+        <div class="empty-board-title">No applications tracked yet</div>
+        <div class="empty-board-sub">Apply to jobs from the feed to track them here</div>
+        <button class="btn btn-primary empty-board-cta" data-tab="feed">Go to Feed</button>
+      </div>`;
+    return;
+  }
+
   for (const col of BOARD_COLS) {
     const colApps = apps.filter(a => a.status === col.status);
     const colEl = document.createElement('div');
@@ -767,25 +1271,50 @@ function renderBoard(apps) {
       cardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
     } else {
       for (const app of colApps) {
-        cardsEl.appendChild(buildKanbanCard(app));
+        cardsEl.appendChild(buildKanbanCard(app, col.color));
       }
     }
     board.appendChild(colEl);
   }
 }
 
-function buildKanbanCard(app) {
+function buildKanbanCard(app, colColor) {
   const card = document.createElement('div');
-  card.className = 'kanban-card';
+  card.className = 'board-card';
   card.dataset.id = String(app.id);
+  if (colColor) card.style.setProperty('--board-card-accent', colColor);
 
-  const scoreColor = app.match_score != null
-    ? (app.match_score >= 75 ? 'var(--success)' : app.match_score >= 50 ? 'var(--warning)' : 'var(--danger)')
-    : 'var(--text-muted)';
-
-  const scorePill = app.match_score != null
-    ? `<span class="kanban-score-pill" style="background:${scoreColor}22;color:${scoreColor};border:1px solid ${scoreColor}44">${app.match_score}</span>`
+  // Score pill
+  const score = app.match_score;
+  let scoreClass = '';
+  if (score != null) {
+    scoreClass = score >= 75 ? 'board-score--green' : score >= 50 ? 'board-score--amber' : 'board-score--red';
+  }
+  const scorePill = score != null
+    ? `<span class="board-score-pill ${scoreClass}">${score}</span>`
     : '';
+
+  // Date formatted relative or short
+  let dateStr = '';
+  if (app.added_at) {
+    const d = new Date(app.added_at);
+    const diffDays = Math.floor((Date.now() - d.getTime()) / 86400000);
+    if (diffDays === 0)      dateStr = 'Today';
+    else if (diffDays === 1) dateStr = 'Yesterday';
+    else if (diffDays < 7)   dateStr = `${diffDays}d ago`;
+    else                     dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  // Favicon + company name from site_name or URL hostname
+  let companyName = app.site_name || '';
+  let faviconUrl  = '';
+  try {
+    const host = new URL(app.job_url).hostname;
+    faviconUrl  = `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
+    if (!companyName) companyName = host.replace(/^www\./, '');
+  } catch (_) { /* malformed URL */ }
+
+  const displayTitle = app.job_title || 'Untitled role';
 
   const otherCols = BOARD_COLS.filter(c => c.status !== app.status);
   const moveOptions = otherCols.map(c =>
@@ -793,10 +1322,17 @@ function buildKanbanCard(app) {
   ).join('');
 
   card.innerHTML = `
-    <div class="kanban-card-title">${esc(app.job_title)}</div>
-    <div class="kanban-card-meta">
-      ${app.site_name ? `<span>${esc(app.site_name)}</span>` : ''}
+    <div class="board-card-header">
+      <div class="board-card-company">
+        ${faviconUrl ? `<img class="board-card-favicon" src="${esc(faviconUrl)}" alt="" width="16" height="16" loading="lazy" onerror="this.style.display='none'">` : ''}
+        <span class="board-card-company-name">${esc(companyName)}</span>
+      </div>
+      <a class="board-card-link" href="${esc(app.job_url)}" target="_blank" rel="noopener" title="Open job posting">🔗</a>
+    </div>
+    <div class="board-card-title">${esc(displayTitle)}</div>
+    <div class="board-card-footer">
       ${scorePill}
+      ${dateStr ? `<span class="board-card-date">${esc(dateStr)}</span>` : ''}
     </div>
     <textarea class="kanban-notes" placeholder="Add notes…" rows="2">${esc(app.notes)}</textarea>
     <div class="kanban-actions">
@@ -804,11 +1340,10 @@ function buildKanbanCard(app) {
         <option value="">Move to…</option>
         ${moveOptions}
       </select>
-      <a class="btn btn-ghost btn-sm" href="${esc(app.job_url)}" target="_blank" rel="noopener" title="Open job">↗</a>
       <button class="btn btn-danger-ghost btn-sm kanban-delete-btn" title="Remove">✕</button>
     </div>`;
 
-  // Autosave notes on blur
+  // Autosave notes
   const textarea = card.querySelector('.kanban-notes');
   let saveTimer;
   textarea.addEventListener('input', () => {
@@ -827,24 +1362,20 @@ function buildKanbanCard(app) {
     moveSelect.value = '';
     const updated = await api.patch(`/api/applications/${app.id}`, { userId: activeUserId, status: newStatus });
     if (updated && !updated.error) {
-      // Move card DOM to new column without a full re-render
       const oldCardsEl = card.closest('.kanban-cards');
       const newCardsEl = document.getElementById(`col-${newStatus}`);
       if (newCardsEl) {
-        // Remove empty placeholder if present
         newCardsEl.querySelector('.kanban-empty')?.remove();
         app.status = newStatus;
-        // Rebuild card with updated move options
-        const newCard = buildKanbanCard(updated);
+        const newColColor = BOARD_COLS.find(c => c.status === newStatus)?.color;
+        const newCard = buildKanbanCard(updated, newColColor);
         newCardsEl.appendChild(newCard);
         card.remove();
-        // If old column is now empty, show placeholder
         if (oldCardsEl && !oldCardsEl.children.length) {
           oldCardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
         }
-        // Update counts
         BOARD_COLS.forEach(c => {
-          const count = document.querySelectorAll(`#col-${c.status} .kanban-card`).length;
+          const count = document.querySelectorAll(`#col-${c.status} .board-card`).length;
           const countEl = document.getElementById(`col-count-${c.status}`);
           if (countEl) countEl.textContent = count;
         });
@@ -858,7 +1389,7 @@ function buildKanbanCard(app) {
     await api.delete(`/api/applications/${app.id}?userId=${activeUserId}`);
     const cardsEl = card.closest('.kanban-cards');
     card.remove();
-    if (cardsEl && !cardsEl.querySelectorAll('.kanban-card').length) {
+    if (cardsEl && !cardsEl.querySelectorAll('.board-card').length) {
       cardsEl.innerHTML = `<div class="kanban-empty">No jobs here yet</div>`;
     }
     const countEl = document.getElementById(`col-count-${app.status}`);
@@ -871,6 +1402,15 @@ function buildKanbanCard(app) {
 // ── Admin tab ─────────────────────────────────────────────────────────
 
 // ── Resume Builder tab ────────────────────────────────────────────────────────
+
+function appendLogEntry(el, msg, state = 'active') {
+  if (!el) return;
+  const div = document.createElement('div');
+  div.className = `log-entry log-${state}`;
+  div.textContent = msg;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
 
 function initResumeTab() {
   let staged = [];
@@ -888,20 +1428,26 @@ function initResumeTab() {
   const statusEl   = document.getElementById('master-save-status');
   const metaEl     = document.getElementById('master-meta');
 
-  // Load current master into textarea
-  api.get('/api/resume').then(({ content, found }) => {
-    masterText.value = content;
-    setMasterMeta(metaEl, content, found);
-    // Also sync sidebar badge
-    const badge = document.getElementById('resume-badge');
-    if (badge) setResumeBadge(badge, content, found);
-  });
+  // Load master resume — extracted so it can be called after auth too
+  function loadResumeMaster() {
+    const url = activeUserId ? `/api/resume?userId=${activeUserId}` : '/api/resume';
+    api.get(url).then(({ content, found }) => {
+      masterText.value = content;
+      setMasterMeta(metaEl, content, found);
+      const badge = document.getElementById('resume-badge');
+      if (badge) setResumeBadge(badge, content, found);
+    });
+  }
+  loadResumeMaster();
+
+  // Expose globally so onSessionReady can trigger a reload
+  window._loadResumeMaster = loadResumeMaster;
 
   // Save master
   saveBtn.addEventListener('click', async () => {
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving…';
-    const { ok } = await api.post('/api/resume', { content: masterText.value });
+    const { ok } = await api.post('/api/resume', { content: masterText.value, userId: activeUserId });
     saveBtn.disabled = false;
     saveBtn.textContent = 'Save Changes';
     if (ok) {
@@ -979,10 +1525,11 @@ function initResumeTab() {
 
     const form = new FormData();
     staged.forEach(f => form.append('files', f));
+    if (activeUserId) form.append('userId', String(activeUserId));
 
     let res;
     try {
-      res = await fetch('/api/resume/merge', { method: 'POST', body: form });
+      res = await authFetch('/api/resume/merge', { method: 'POST', body: form });
     } catch (e) {
       appendLogEntry(logEl, `Network error: ${e.message}`, 'error');
       resetBtn();
@@ -1037,6 +1584,8 @@ function initResumeTab() {
       renderMergeResult(lastResult, resultEl, masterText, metaEl);
       staged = [];
       renderStaged();
+      // Reload from DB to confirm save
+      loadResumeMaster();
     }
   });
 
@@ -1054,7 +1603,7 @@ function initResumeTab() {
           <div style="color:var(--success);font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:6px">
             ${ICON_CHECK} Master created from ${filenames.length} file${filenames.length !== 1 ? 's' : ''}
           </div>
-          <div style="font-size:12px;color:var(--text-dim)">${updated.length.toLocaleString()} characters · Click <strong>Save Changes</strong> to save.</div>
+          <div style="font-size:12px;color:var(--text-dim)">${updated.length.toLocaleString()} characters · Saved to your profile automatically.</div>
         </div>`;
     } else if (!additions) {
       html = `
@@ -1071,7 +1620,7 @@ function initResumeTab() {
           </div>
           <div class="additions-box">${esc(additions)}</div>
           <div style="font-size:12px;color:var(--text-dim);margin-top:10px">
-            Appended to your master resume below. Click <strong>Save Changes</strong> to save.
+            Appended to your master resume below. Saved to your profile automatically.
           </div>
         </div>`;
     }
@@ -1442,11 +1991,11 @@ async function finishWizardFixed() {
     const user = await api.post('/api/users', { name: wizardData.name, email: wizardData.email });
     if (user.error) throw new Error(user.error);
 
-    await fetch(`/api/users/${user.id}/resume`, {
+    await authFetch(`/api/users/${user.id}/resume`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: wizardData.resume }),
     });
-    await fetch(`/api/users/${user.id}/preferences`, {
+    await authFetch(`/api/users/${user.id}/preferences`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         work_type:      wizardData.work_type,
@@ -1461,7 +2010,7 @@ async function finishWizardFixed() {
         location_pref_mode: wizardData.location_pref_mode,
       }),
     });
-    await fetch(`/api/users/${user.id}/contact`, {
+    await authFetch(`/api/users/${user.id}/contact`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         street: wizardData.street, city: wizardData.city,
@@ -1533,7 +2082,7 @@ function sortedFeedResults() {
 function applyFeedFilter() {
   const q = feedFilterText.toLowerCase().trim();
   let visible = 0;
-  document.querySelectorAll('#feed-results .feed-job-card').forEach(card => {
+  document.querySelectorAll('#feed-results .feed-job-card-v2').forEach(card => {
     const match = !q || (card.dataset.searchText ?? '').includes(q);
     card.style.display = match ? '' : 'none';
     if (match) visible++;
@@ -1578,8 +2127,21 @@ async function refreshFeedTab() {
     if (!user?.error) userInfo.textContent = `Scanning as: ${user.name}`;
 
     // Pre-load cached results so the user sees them immediately
+    if (!resultsEl.dataset.scanActive && !feedResults.length) {
+      // Show skeleton loaders while we fetch
+      _showFeedSkeletons(resultsEl, 4);
+    }
+
+    const skeletonStart = Date.now();
+
     const cached = await api.get(`/api/feed/cached?userId=${activeUserId}`);
     if (Array.isArray(cached) && cached.length && !resultsEl.dataset.scanActive) {
+      // Ensure skeleton is shown for at least 500ms (feels intentional, not glitchy)
+      const elapsed = Date.now() - skeletonStart;
+      if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
+
+      _hideFeedSkeletons(resultsEl);
+
       feedResults = cached
         .filter(e => e.analysis)
         .map(e => ({
@@ -1603,6 +2165,13 @@ async function refreshFeedTab() {
             ${count} cached result${count !== 1 ? 's' : ''} — click <strong>Start Scan</strong> to refresh
           </div>
         </div>`;
+    } else if (!resultsEl.dataset.scanActive && !feedResults.length) {
+      _hideFeedSkeletons(resultsEl);
+      // Show improved empty state
+      _showFeedEmptyState(resultsEl);
+    } else {
+      // Scan is active or results already rendered — remove any leftover skeletons
+      _hideFeedSkeletons(resultsEl);
     }
   }
 
@@ -1610,7 +2179,24 @@ async function refreshFeedTab() {
   const active = sites.filter(s => s.active);
   siteCount.textContent = active.length
     ? `${active.length} active site${active.length !== 1 ? 's' : ''} configured`
-    : 'No active sites yet — add some in the Admin tab.';
+    : 'No active sites yet — add some in Settings.';
+}
+
+function _showFeedEmptyState(container) {
+  if (!container || container.dataset.scanActive) return;
+  container.innerHTML = `
+    <div class="empty-state-wrap">
+      <div class="empty-state-icon">🔍</div>
+      <div class="empty-state-title">No jobs scanned yet</div>
+      <div class="empty-state-sub">Add job sites in Settings then hit Start Scan</div>
+      <div class="empty-state-actions">
+        <button class="btn btn-primary" id="feed-empty-scan-btn">Start Scan</button>
+        <button class="btn btn-secondary" data-tab="observe">Open Settings</button>
+      </div>
+    </div>`;
+  container.querySelector('#feed-empty-scan-btn')?.addEventListener('click', () => {
+    document.getElementById('feed-scan-btn')?.click();
+  });
 }
 
 function initFeedTab() {
@@ -1643,7 +2229,7 @@ function initFeedTab() {
     if (!activeUserId) { toast('Select a profile first', 'error'); return; }
     const sites = await api.get('/api/sites');
     if (!sites.filter(s => s.active).length) {
-      toast('Add at least one active site in the Admin tab first', 'error');
+      toast('Add at least one active site in Settings first', 'error');
       return;
     }
     await startFeedScan(activeUserId);
@@ -1686,6 +2272,7 @@ async function startFeedScan(userId) {
   const labelEl    = document.getElementById('feed-progress-label');
   const resultsEl  = document.getElementById('feed-results');
   const summaryEl  = document.getElementById('feed-summary');
+  const scanCardsEl = document.getElementById('feed-scan-cards');
 
   feedScanController = new AbortController();
 
@@ -1697,6 +2284,12 @@ async function startFeedScan(userId) {
   resultsEl.dataset.scanActive = '1';
   fillEl.style.width = '0%';
   feedResults = [];
+
+  // Show scan animation grid (clears previous cards)
+  if (scanCardsEl) {
+    scanCardsEl.innerHTML = '<div class="scan-anim-grid" id="scan-anim-grid"></div>';
+    scanCardsEl.classList.remove('hidden');
+  }
 
   let totalSites   = 0;
   let sitesDone    = 0;
@@ -1712,10 +2305,14 @@ async function startFeedScan(userId) {
     } else if (evt.type === 'site_start') {
       labelEl.textContent = `[${(evt.site_index ?? 0) + 1}/${totalSites}] Scanning ${evt.site_name}…`;
       fillEl.style.width = `${Math.round(((evt.site_index ?? 0) / totalSites) * 90)}%`;
+      // Create a scanning card for this site
+      _scanAnimUpsertCard(evt.site_name, evt.site_url || '', 'scanning', null, null);
     } else if (evt.type === 'agent_step') {
       labelEl.textContent = `🤖 ${evt.site_name}: ${evt.message}`;
+      _scanAnimSetStatus(evt.site_name, evt.message);
     } else if (evt.type === 'site_jobs_found') {
       labelEl.textContent = `${evt.site_name}: found ${evt.job_count} jobs`;
+      _scanAnimSetStatus(evt.site_name, `${evt.job_count} job${evt.job_count !== 1 ? 's' : ''} found`);
     } else if (evt.type === 'job_analyzing') {
       labelEl.textContent = `Analyzing: ${evt.job?.job?.title ?? '…'}`;
     } else if (evt.type === 'job_result') {
@@ -1730,6 +2327,8 @@ async function startFeedScan(userId) {
     } else if (evt.type === 'job_filtered') {
       skipped++;
     } else if (evt.type === 'site_error') {
+      _scanAnimUpsertCard(evt.site_name, '', 'error', null, 0);
+      _scanAnimSetStatus(evt.site_name, evt.message || 'Error');
       const err = document.createElement('div');
       err.className = 'card';
       err.style.borderColor = 'var(--danger-border)';
@@ -1737,6 +2336,9 @@ async function startFeedScan(userId) {
       resultsEl.appendChild(err);
     } else if (evt.type === 'site_done') {
       sitesDone++;
+      // Mark the card done with final job count
+      const jobCount = evt.job_count ?? null;
+      _scanAnimUpsertCard(evt.site_name, '', 'done', jobCount, null);
       if (evt.removed?.length) {
         totalRemoved += evt.removed.length;
         const notice = document.createElement('div');
@@ -1747,7 +2349,11 @@ async function startFeedScan(userId) {
     } else if (evt.type === 'scan_done') {
       fillEl.style.width = '100%';
       labelEl.textContent = evt.message || 'Scan complete';
-      setTimeout(() => progressEl.classList.add('hidden'), 2000);
+      // Hide scan cards after a short delay
+      setTimeout(() => {
+        if (scanCardsEl) scanCardsEl.classList.add('hidden');
+        progressEl.classList.add('hidden');
+      }, 2500);
       summaryEl.classList.remove('hidden');
       const removedLine = totalRemoved ? ` · ${totalRemoved} removed` : '';
       summaryEl.innerHTML = `
@@ -1799,7 +2405,7 @@ async function startReanalyzeAll(userId) {
       const idx = feedResults.findIndex(r => r.feedJob.job.url === url);
       if (idx >= 0) feedResults[idx] = { feedJob: evt.job, fromCache: false };
       // Replace only the affected card — no full list rebuild
-      const oldCard = url && document.querySelector(`#feed-results .feed-job-card[data-url="${CSS.escape(url)}"]`);
+      const oldCard = url && document.querySelector(`#feed-results .feed-job-card-v2[data-url="${CSS.escape(url)}"]`);
       if (oldCard) {
         const newCard = buildFeedJobCard(evt.job, false);
         oldCard.replaceWith(newCard);
@@ -1827,44 +2433,243 @@ async function startReanalyzeAll(userId) {
   stopBtn.classList.add('hidden');
 }
 
+// ── Feed card helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Extract a root domain from a job URL for Clearbit logo lookup.
+ * Tries to use the company name from site_name first (converted to a guessed domain),
+ * then falls back to the actual URL hostname stripped of known ATS subdomains.
+ */
+function fcExtractLogoDomain(jobUrl, siteName) {
+  try {
+    const url  = new URL(jobUrl);
+    const host = url.hostname.toLowerCase(); // e.g. boards.greenhouse.io
+
+    // Map common ATS hostnames → extract company from path
+    const atsPatterns = [
+      { host: 'boards.greenhouse.io',    pathIdx: 1 }, // /stripe
+      { host: 'boards.eu.greenhouse.io', pathIdx: 1 },
+      { host: 'jobs.lever.co',           pathIdx: 1 }, // /stripe
+      { host: 'apply.workable.com',      pathIdx: 1 },
+      { host: 'jobs.ashbyhq.com',        pathIdx: 1 },
+    ];
+
+    for (const p of atsPatterns) {
+      if (host === p.host || host.endsWith('.' + p.host)) {
+        const slug = url.pathname.split('/').filter(Boolean)[p.pathIdx - 1];
+        if (slug) return slug.toLowerCase() + '.com';
+      }
+    }
+
+    // If the site_name looks like a real company name, guess domain
+    if (siteName && !/greenhouse|lever|ashby|workable|indeed|linkedin/i.test(siteName)) {
+      const guess = siteName.trim().toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+      if (guess.length > 4) return guess;
+    }
+
+    // Fallback: strip www. and return hostname
+    return host.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build an SVG score ring (52 px, strokeWidth 4).
+ * Color: green ≥70, amber 50-69, red <50.
+ */
+function fcScoreRingSVG(score) {
+  const size   = 52;
+  const sw     = 4;
+  const r      = (size - sw) / 2;       // 24
+  const circ   = 2 * Math.PI * r;       // circumference
+  const pct    = Math.max(0, Math.min(100, score)) / 100;
+  const dash   = circ * pct;
+  const gap    = circ - dash;
+  const cx     = size / 2;
+  const cy     = size / 2;
+
+  const color  = score >= 70 ? '#10B981' : score >= 50 ? '#F59E0B' : '#EF4444';
+  const trackC = 'rgba(255,255,255,0.07)';
+
+  return `<svg class="fc-ring-svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="transform:rotate(-90deg)">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${trackC}" stroke-width="${sw}"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}"
+      stroke-linecap="round"
+      stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}"
+      class="fc-ring-arc"/>
+  </svg>
+  <span class="fc-ring-num" style="color:${color}">${score}</span>`;
+}
+
+/**
+ * Build the inline expandable details section (strengths / gaps / requirements).
+ */
+function fcBuildDetailsHTML(analysis) {
+  if (!analysis) return '';
+
+  const strengths    = (analysis.strengths    || []).slice(0, 6);
+  const gaps         = (analysis.gaps         || []).slice(0, 6);
+  const requirements = (analysis.requirements || []).slice(0, 8);
+
+  if (!strengths.length && !gaps.length && !requirements.length) return '';
+
+  const strengthsHTML = strengths.length
+    ? strengths.map(s => `
+        <div class="fc-detail-item fc-detail-strength">
+          <svg class="fc-detail-icon" viewBox="0 0 16 16" width="14" height="14" fill="none">
+            <circle cx="8" cy="8" r="7" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.4)" stroke-width="1"/>
+            <path d="M5 8l2 2 4-4" stroke="#10B981" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>${esc(s)}</span>
+        </div>`).join('')
+    : '';
+
+  const gapsHTML = gaps.length
+    ? gaps.map(g => `
+        <div class="fc-detail-item fc-detail-gap">
+          <svg class="fc-detail-icon" viewBox="0 0 16 16" width="14" height="14" fill="none">
+            <circle cx="8" cy="8" r="7" fill="rgba(245,158,11,0.12)" stroke="rgba(245,158,11,0.35)" stroke-width="1"/>
+            <path d="M8 5v3M8 10.5v.5" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span>${esc(g)}</span>
+        </div>`).join('')
+    : '';
+
+  const reqHTML = requirements.length
+    ? requirements.map(r => `
+        <div class="fc-detail-item fc-detail-req">
+          <span class="fc-req-dot"></span>
+          <span>${esc(r)}</span>
+        </div>`).join('')
+    : '';
+
+  return `
+    <div class="fc-details-body">
+      ${strengths.length ? `
+        <div class="fc-details-section">
+          <div class="fc-details-section-title fc-dt-green">Strengths</div>
+          ${strengthsHTML}
+        </div>` : ''}
+      ${gaps.length ? `
+        <div class="fc-details-section">
+          <div class="fc-details-section-title fc-dt-amber">Gaps</div>
+          ${gapsHTML}
+        </div>` : ''}
+      ${requirements.length ? `
+        <div class="fc-details-section">
+          <div class="fc-details-section-title fc-dt-muted">Requirements</div>
+          ${reqHTML}
+        </div>` : ''}
+    </div>`;
+}
+
 function buildFeedJobCard(feedJob, fromCache = false) {
   const { job, site_name, filter_result, warnings, analysis, analyzed } = feedJob;
   const card = document.createElement('div');
-  card.className = `feed-job-card${warnings.length ? ' has-warnings' : ''}`;
+  const hasWarnings = warnings && warnings.length > 0;
+  card.className = `feed-job-card-v2${hasWarnings ? ' has-warnings' : ''}`;
   card.dataset.url = job.url;
   card.dataset.searchText = `${job.title} ${site_name ?? ''} ${job.location ?? ''} ${job.department ?? ''}`.toLowerCase();
 
-  const score = analysis?.match_score;
-  const scoreHTML = typeof score === 'number' ? `
-    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px">
-      <span style="font-family:var(--mono);font-size:16px;font-weight:700;color:${scoreColor(score)}">${score}</span>
-      <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
-        <div style="width:0%;height:100%;background:${scoreColor(score)};border-radius:2px;transition:width 0.6s ease" class="feed-score-bar" data-score="${score}"></div>
-      </div>
-      <span style="font-size:11px;color:var(--text-dim)">${scoreLabel(score)}</span>
-    </div>` : '';
+  const score    = analysis?.match_score;
+  const hasScore = typeof score === 'number';
 
-  const warningsHTML = warnings.map(w => `<span class="warn-badge">${esc(w)}</span>`).join('');
+  const company = site_name || '';
+  const role    = job.title || '—';
 
-  const tags = [job.location, job.department].filter(Boolean)
-    .map(t => `<span class="tag">${esc(t)}</span>`).join('');
+  const warningsHTML = (warnings || []).map(w => `<span class="warn-badge">${esc(w)}</span>`).join('');
+  const locationMeta = [job.location, job.department].filter(Boolean).map(esc).join(' · ');
+
+  // Score ring or pending placeholder
+  const ringHTML = hasScore
+    ? `<div class="fc-ring-wrap">${fcScoreRingSVG(score)}</div>`
+    : `<div class="fc-ring-wrap fc-ring-pending"><span class="fc-ring-num" style="color:var(--text-muted)">—</span></div>`;
+
+  // Details section (expand/collapse)
+  const detailsHTML = analyzed ? fcBuildDetailsHTML(analysis) : '';
+  const hasDetails  = analyzed && detailsHTML.trim().length > 0;
+
+  // Company logo (built via DOM after innerHTML to attach onerror handler)
+  const logoDomain = fcExtractLogoDomain(job.url, company);
+  const initials   = (company || role || '?').trim().slice(0, 2).toUpperCase();
 
   card.innerHTML = `
-    <div class="feed-site-label">${esc(site_name)}${fromCache ? ' <span class="cache-badge">cached</span>' : ''}</div>
-    <div class="job-card-title">${esc(job.title)}</div>
-    ${tags ? `<div class="job-card-tags" style="margin-top:4px">${tags}</div>` : ''}
-    ${warningsHTML ? `<div style="margin-top:8px">${warningsHTML}</div>` : ''}
-    ${scoreHTML}
-    ${analysis?.summary ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.65;margin-top:6px">${esc(analysis.summary)}</div>` : ''}
-    <div class="job-card-actions">
+    <div class="fc-top">
+      <div class="fc-logo-slot"></div>
+      <div class="fc-header-body">
+        <div class="fc-source-row">
+          <span class="fc-source-label">${esc(company)}${fromCache ? ' <span class="cache-badge">cached</span>' : ''}</span>
+          ${warningsHTML}
+        </div>
+        <div class="fc-role-title">${esc(role)}</div>
+        ${locationMeta ? `<div class="fc-location-meta">${locationMeta}</div>` : ''}
+        ${analysis?.summary ? `<div class="fc-summary">${esc(analysis.summary)}</div>` : ''}
+      </div>
+      ${ringHTML}
+    </div>
+    ${hasDetails ? `
+    <button class="fc-toggle-btn" aria-expanded="false">
+      <svg viewBox="0 0 10 10" width="10" height="10" fill="none">
+        <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="fc-chevron-path"/>
+      </svg>
+      <span class="fc-toggle-label">Show details</span>
+    </button>
+    <div class="fc-details-drawer" aria-hidden="true">
+      ${detailsHTML}
+    </div>` : ''}
+    <div class="fc-actions feed-card-actions">
+      ${analyzed  ? `<button class="btn btn-primary btn-sm feed-apply-btn">Apply Now</button>` : ''}
       ${!analyzed ? `<button class="btn btn-primary btn-sm feed-analyze-btn">Analyze</button>` : ''}
-      ${analyzed  ? `<button class="btn btn-primary btn-sm feed-apply-btn">Apply →</button>` : ''}
+      <a class="btn btn-secondary btn-sm" href="${esc(job.url)}" target="_blank" rel="noopener">View Details</a>
       ${analyzed  ? `<button class="btn btn-ghost btn-sm feed-reanalyze-btn" title="Re-score against your current resume">↺ Re-analyze</button>` : ''}
       <button class="btn btn-ghost btn-sm feed-track-btn" title="Add to Board">＋ Track</button>
-      <button class="btn btn-secondary btn-sm feed-copy-btn">Copy URL</button>
-      <a class="btn btn-ghost btn-sm" href="${esc(job.url)}" target="_blank" rel="noopener">Open →</a>
+      <button class="btn btn-ghost btn-sm feed-copy-btn">Copy URL</button>
     </div>`;
 
+  // Inject company logo with fallback
+  const logoSlot = card.querySelector('.fc-logo-slot');
+  if (logoDomain) {
+    const img = document.createElement('img');
+    img.className = 'fc-logo-img';
+    img.width  = 32;
+    img.height = 32;
+    img.alt    = company || 'logo';
+    img.src    = `https://logo.clearbit.com/${logoDomain}`;
+    img.onerror = () => {
+      img.replaceWith(fcInitialsCircle(initials, company));
+    };
+    logoSlot.appendChild(img);
+  } else {
+    logoSlot.appendChild(fcInitialsCircle(initials, company));
+  }
+
+  // Inline expand / collapse
+  if (hasDetails) {
+    const toggleBtn = card.querySelector('.fc-toggle-btn');
+    const drawer    = card.querySelector('.fc-details-drawer');
+    const label     = toggleBtn.querySelector('.fc-toggle-label');
+
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = toggleBtn.getAttribute('aria-expanded') === 'true';
+      if (open) {
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        drawer.setAttribute('aria-hidden', 'true');
+        drawer.style.maxHeight = '0';
+        label.textContent = 'Show details';
+        toggleBtn.classList.remove('fc-toggle-open');
+      } else {
+        toggleBtn.setAttribute('aria-expanded', 'true');
+        drawer.setAttribute('aria-hidden', 'false');
+        drawer.style.maxHeight = drawer.scrollHeight + 'px';
+        label.textContent = 'Hide details';
+        toggleBtn.classList.add('fc-toggle-open');
+      }
+    });
+  }
+
+  // Button event handlers (identical logic to original)
   card.querySelector('.feed-copy-btn')?.addEventListener('click', () => {
     navigator.clipboard.writeText(job.url).then(() => toast('URL copied'));
   });
@@ -1902,7 +2707,7 @@ function buildFeedJobCard(feedJob, fromCache = false) {
       const s = data.analysis.match_score ?? 0;
       const el = document.createElement('div');
       el.innerHTML = `<div style="font-size:12px;color:${scoreColor(s)};font-weight:700;margin-top:6px">${s}/100 — ${scoreLabel(s)}</div>`;
-      card.querySelector('.job-card-actions').before(el);
+      card.querySelector('.fc-actions').before(el);
     } else {
       toast(data.error || 'Analysis failed', 'error');
     }
@@ -1931,14 +2736,23 @@ function buildFeedJobCard(feedJob, fromCache = false) {
     }
   });
 
-  // Animate score bar
-  requestAnimationFrame(() => {
-    card.querySelectorAll('.feed-score-bar').forEach(bar => {
-      requestAnimationFrame(() => { bar.style.width = bar.dataset.score + '%'; });
-    });
-  });
-
   return card;
+}
+
+/** Render a colored initials fallback circle for missing logos */
+function fcInitialsCircle(initials, name) {
+  const colors = [
+    ['#6366F1','#3730A3'],['#10B981','#065F46'],['#F59E0B','#92400E'],
+    ['#EF4444','#7F1D1D'],['#8B5CF6','#4C1D95'],['#06B6D4','#164E63'],
+    ['#EC4899','#831843'],['#84CC16','#365314'],
+  ];
+  const idx = [...(name || initials || '')].reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length;
+  const [fg, bg] = colors[idx];
+  const el = document.createElement('div');
+  el.className = 'fc-logo-initials';
+  el.style.cssText = `background:${bg}33;border-color:${fg}44;color:${fg}`;
+  el.textContent = initials || '?';
+  return el;
 }
 
 // ── Sites admin (inside Admin tab) ─────────────────────────────────────
@@ -2033,7 +2847,7 @@ function renderSitesTable(container, sites) {
       cell.querySelector('.ats-save').addEventListener('click', async () => {
         const ats_type = document.getElementById(`ats-type-${id}`).value;
         const ats_slug = document.getElementById(`ats-slug-${id}`).value.trim();
-        await fetch(`/api/sites/${id}`, {
+        await authFetch(`/api/sites/${id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ats_type, ats_slug }),
         });
@@ -2053,7 +2867,7 @@ function renderSitesTable(container, sites) {
     btn.addEventListener('click', async () => {
       const id     = Number(btn.dataset.id);
       const active = btn.dataset.active === '1';
-      await fetch(`/api/sites/${id}`, {
+      await authFetch(`/api/sites/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ active: !active }),
       });
@@ -2065,7 +2879,7 @@ function renderSitesTable(container, sites) {
   wrap.querySelectorAll('.site-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Remove this site?')) return;
-      await fetch(`/api/sites/${btn.dataset.id}`, { method: 'DELETE' });
+      await authFetch(`/api/sites/${btn.dataset.id}`, { method: 'DELETE' });
       const newSites = await api.get('/api/sites');
       renderSitesTable(container, newSites);
     });
@@ -2127,6 +2941,14 @@ async function loadProfileTab() {
   const user = await api.get(`/api/users/${activeUserId}`);
   if (!user || user.error) return;
 
+  // Hero section
+  const heroAvatar = document.getElementById('profile-hero-avatar');
+  const heroName   = document.getElementById('profile-hero-name');
+  const heroEmail  = document.getElementById('profile-hero-email');
+  if (heroAvatar) heroAvatar.textContent = getInitials(user.name || user.email || '');
+  if (heroName)   heroName.textContent   = user.name  || '—';
+  if (heroEmail)  heroEmail.textContent  = user.email || '';
+
   // Contact
   document.getElementById('profile-name').value     = user.name || '';
   document.getElementById('profile-email').value    = user.email || '';
@@ -2164,7 +2986,9 @@ async function loadProfileTab() {
   document.getElementById('profile-additional-info').value = user.additional_info || '';
 
   // Resume
-  document.getElementById('profile-resume').value = user.resume_text || '';
+  const resumeVal = user.resume_text || '';
+  document.getElementById('profile-resume').value = resumeVal;
+  updateResumeCharCount(resumeVal);
 
   // Preferences
   const p = user.preferences;
@@ -2180,35 +3004,31 @@ async function loadProfileTab() {
   buildModeToggle('profile-salary-mode', p.salary_mode, 'salary_mode');
 }
 
+// Helper: show a green saved toast inline in profile sections
+function profileSaveStatus(statusEl, ok, errMsg) {
+  if (!statusEl) return;
+  if (ok) {
+    statusEl.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Saved`;
+    statusEl.style.color = 'var(--success)';
+    setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 2500);
+  } else {
+    statusEl.textContent = errMsg || 'Error saving';
+    statusEl.style.color = 'var(--danger)';
+  }
+}
+
+// Helper: update resume character count display
+function updateResumeCharCount(text) {
+  const el = document.getElementById('profile-resume-chars');
+  if (!el) return;
+  const chars = (text || '').trim().length;
+  el.textContent = chars > 0 ? `${chars.toLocaleString()} chars` : '';
+}
+
 function initProfileTab() {
-  // Save application info
-  document.getElementById('profile-save-appinfo-btn').addEventListener('click', async () => {
-    if (!activeUserId) { toast('No active profile selected', 'error'); return; }
-    const btn    = document.getElementById('profile-save-appinfo-btn');
-    const status = document.getElementById('profile-appinfo-status');
-    btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      const res = await fetch(`/api/users/${activeUserId}/contact`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          work_authorized:      document.querySelector('input[name="pref-work-auth"]:checked')?.value || '',
-          requires_sponsorship: document.querySelector('input[name="pref-sponsorship"]:checked')?.value || '',
-          available_start:      document.getElementById('profile-available-start').value.trim(),
-          years_experience:     document.querySelector('input[name="pref-years-exp"]:checked')?.value || '',
-          ts_proficiency:       document.querySelector('input[name="pref-ts-prof"]:checked')?.value || '',
-          llm_frameworks:       [...document.querySelectorAll('.fw-check:checked')].map(cb => cb.value),
-          additional_info:      document.getElementById('profile-additional-info').value.trim(),
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (res.ok) {
-        status.textContent = 'Saved ✓'; status.style.color = 'var(--success)';
-        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 2000);
-      } else {
-        status.textContent = body.error || `Error ${res.status}`; status.style.color = 'var(--danger)';
-      }
-    } catch (e) { status.textContent = String(e); status.style.color = 'var(--danger)'; }
-    btn.disabled = false; btn.textContent = 'Save Application Info';
+  // Live char count on resume textarea
+  document.getElementById('profile-resume')?.addEventListener('input', function() {
+    updateResumeCharCount(this.value);
   });
 
   // Save contact
@@ -2218,34 +3038,60 @@ function initProfileTab() {
     const status = document.getElementById('profile-contact-status');
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const res = await fetch(`/api/users/${activeUserId}/contact`, {
+      const name    = document.getElementById('profile-name').value.trim();
+      const email   = document.getElementById('profile-email').value.trim();
+      const res = await authFetch(`/api/users/${activeUserId}/contact`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name:     document.getElementById('profile-name').value.trim(),
-          email:    document.getElementById('profile-email').value.trim(),
+          name, email,
           phone:    document.getElementById('profile-phone').value.trim(),
           linkedin: document.getElementById('profile-linkedin').value.trim(),
-          street:   document.getElementById('profile-street').value.trim(),
-          city:     document.getElementById('profile-city').value.trim(),
-          state:    document.getElementById('profile-state').value.trim(),
-          zip:      document.getElementById('profile-zip').value.trim(),
         }),
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok) {
-        status.textContent = 'Saved ✓';
-        status.style.color = 'var(--success)';
-        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 2000);
+        // Update hero
+        const heroAvatar = document.getElementById('profile-hero-avatar');
+        const heroName   = document.getElementById('profile-hero-name');
+        const heroEmail  = document.getElementById('profile-hero-email');
+        if (heroAvatar) heroAvatar.textContent = getInitials(name || email || '');
+        if (heroName)   heroName.textContent   = name  || '—';
+        if (heroEmail)  heroEmail.textContent  = email || '';
         await refreshUserSelect();
+        profileSaveStatus(status, true);
+        toast('Contact saved');
       } else {
-        status.textContent = body.error || `Error ${res.status}`;
-        status.style.color = 'var(--danger)';
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
       }
-    } catch (e) {
-      status.textContent = String(e);
-      status.style.color = 'var(--danger)';
-    }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
     btn.disabled = false; btn.textContent = 'Save Contact';
+  });
+
+  // Save location
+  document.getElementById('profile-save-location-btn').addEventListener('click', async () => {
+    if (!activeUserId) { toast('No active profile selected', 'error'); return; }
+    const btn    = document.getElementById('profile-save-location-btn');
+    const status = document.getElementById('profile-location-status');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await authFetch(`/api/users/${activeUserId}/contact`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          street: document.getElementById('profile-street').value.trim(),
+          city:   document.getElementById('profile-city').value.trim(),
+          state:  document.getElementById('profile-state').value.trim(),
+          zip:    document.getElementById('profile-zip').value.trim(),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        profileSaveStatus(status, true);
+        toast('Location saved');
+      } else {
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
+      }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
+    btn.disabled = false; btn.textContent = 'Save Location';
   });
 
   // Save resume
@@ -2256,23 +3102,18 @@ function initProfileTab() {
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
       const content = document.getElementById('profile-resume').value;
-      const res  = await fetch(`/api/users/${activeUserId}/resume`, {
+      const res  = await authFetch(`/api/users/${activeUserId}/resume`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content }),
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok) {
-        status.textContent = 'Saved ✓';
-        status.style.color = 'var(--success)';
-        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 2000);
+        profileSaveStatus(status, true);
+        toast('Resume saved');
       } else {
-        status.textContent = body.error || `Error ${res.status}`;
-        status.style.color = 'var(--danger)';
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
       }
-    } catch (e) {
-      status.textContent = String(e);
-      status.style.color = 'var(--danger)';
-    }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
     btn.disabled = false; btn.textContent = 'Save Resume';
   });
 
@@ -2287,7 +3128,7 @@ function initProfileTab() {
       const exp_level   = document.querySelector('input[name="pref-exp-level"]:checked')?.value || 'any';
       const departments = [...document.querySelectorAll('#profile-departments input:checked')].map(cb => cb.value);
       const salaryVal   = document.getElementById('profile-salary').value;
-      const res = await fetch(`/api/users/${activeUserId}/preferences`, {
+      const res = await authFetch(`/api/users/${activeUserId}/preferences`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           work_type,
@@ -2304,18 +3145,66 @@ function initProfileTab() {
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok) {
-        status.textContent = 'Saved ✓';
-        status.style.color = 'var(--success)';
-        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 2000);
+        profileSaveStatus(status, true);
+        toast('Preferences saved');
       } else {
-        status.textContent = body.error || `Error ${res.status}`;
-        status.style.color = 'var(--danger)';
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
       }
-    } catch (e) {
-      status.textContent = String(e);
-      status.style.color = 'var(--danger)';
-    }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
     btn.disabled = false; btn.textContent = 'Save Preferences';
+  });
+
+  // Save application details
+  document.getElementById('profile-save-appinfo-btn').addEventListener('click', async () => {
+    if (!activeUserId) { toast('No active profile selected', 'error'); return; }
+    const btn    = document.getElementById('profile-save-appinfo-btn');
+    const status = document.getElementById('profile-appinfo-status');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await authFetch(`/api/users/${activeUserId}/contact`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          work_authorized:      document.querySelector('input[name="pref-work-auth"]:checked')?.value || '',
+          requires_sponsorship: document.querySelector('input[name="pref-sponsorship"]:checked')?.value || '',
+          available_start:      document.getElementById('profile-available-start').value.trim(),
+          years_experience:     document.querySelector('input[name="pref-years-exp"]:checked')?.value || '',
+          additional_info:      document.getElementById('profile-additional-info').value.trim(),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        profileSaveStatus(status, true);
+        toast('Application details saved');
+      } else {
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
+      }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
+    btn.disabled = false; btn.textContent = 'Save Details';
+  });
+
+  // Save skills
+  document.getElementById('profile-save-skills-btn').addEventListener('click', async () => {
+    if (!activeUserId) { toast('No active profile selected', 'error'); return; }
+    const btn    = document.getElementById('profile-save-skills-btn');
+    const status = document.getElementById('profile-skills-status');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await authFetch(`/api/users/${activeUserId}/contact`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ts_proficiency: document.querySelector('input[name="pref-ts-prof"]:checked')?.value || '',
+          llm_frameworks: [...document.querySelectorAll('.fw-check:checked')].map(cb => cb.value),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        profileSaveStatus(status, true);
+        toast('Skills saved');
+      } else {
+        profileSaveStatus(status, false, body.error || `Error ${res.status}`);
+      }
+    } catch (e) { profileSaveStatus(status, false, String(e)); }
+    btn.disabled = false; btn.textContent = 'Save Skills';
   });
 }
 
@@ -2327,6 +3216,7 @@ function openApplyModal() {
   document.getElementById('apply-progress-list').innerHTML = '';
   document.getElementById('apply-paused-msg').classList.add('hidden');
   document.getElementById('apply-error-msg').classList.add('hidden');
+  document.getElementById('apply-captcha-panel')?.classList.add('hidden');
   document.getElementById('apply-field-count').textContent = '';
 }
 
@@ -2336,38 +3226,98 @@ function appendApplyStep(icon, text, cls = '') {
   const el = document.createElement('div');
   el.style.cssText = 'display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--text-dim)';
   if (cls) el.className = cls;
-  el.innerHTML = `<span style="flex-shrink:0;margin-top:1px">${icon}</span><span>${esc(text)}</span>`;
-  document.getElementById('apply-progress-list').appendChild(el);
-  el.scrollIntoView({ block: 'nearest' });
+  el.innerHTML = `<span style="flex-shrink:0;margin-top:1px">${icon}</span><span style="word-break:break-word">${esc(text)}</span>`;
+  const list = document.getElementById('apply-progress-list');
+  list.appendChild(el);
+  list.scrollTop = list.scrollHeight;
+}
+
+// Generates a self-contained JS snippet that fills a form by label matching
+// Safe to paste in browser console or run as a bookmarklet
+function buildFillBookmarklet(filledValues) {
+  const entries = Object.entries(filledValues)
+    .filter(([, v]) => v && String(v).trim());
+
+  return `(function(){
+var vals=${JSON.stringify(Object.fromEntries(entries))};
+var filled=0;
+
+/* React-aware setter — works on Greenhouse, Lever, Workable React forms */
+function reactSet(el,val){
+  var proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+  var setter=Object.getOwnPropertyDescriptor(proto,'value');
+  if(setter&&setter.set)setter.set.call(el,val);
+  else el.value=val;
+  el.dispatchEvent(new Event('input',{bubbles:true}));
+  el.dispatchEvent(new Event('change',{bubbles:true}));
+  el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true}));
+}
+
+function tryFill(el,val){
+  if(!el||!val)return false;
+  var tag=el.tagName.toLowerCase();
+  if(tag==='select'){
+    var lv=val.toLowerCase();
+    var opt=Array.from(el.options).find(o=>o.text.toLowerCase()===lv||o.value.toLowerCase()===lv||lv.includes(o.text.toLowerCase()));
+    if(!opt)opt=Array.from(el.options).find(o=>o.text.toLowerCase().includes(lv));
+    if(opt){el.value=opt.value;el.dispatchEvent(new Event('change',{bubbles:true}));return true;}
+    return false;
+  }
+  if(el.type==='checkbox'||el.type==='radio'){
+    var chk=/^(yes|true|1)$/i.test(val);
+    if(el.type==='radio'){
+      var radios=document.querySelectorAll('input[type=radio][name="'+el.name+'"]');
+      var match=Array.from(radios).find(r=>{var l=document.querySelector('label[for="'+r.id+'"]');return l&&l.textContent.trim().toLowerCase()===val.toLowerCase();});
+      if(match){match.checked=true;match.dispatchEvent(new Event('change',{bubbles:true}));return true;}
+    }
+    el.checked=chk;el.dispatchEvent(new Event('change',{bubbles:true}));return true;
+  }
+  reactSet(el,val);return true;
+}
+
+function findByLabel(text){
+  var t=text.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+  /* 1. aria-label */
+  var el=document.querySelector('[aria-label]');
+  var all=Array.from(document.querySelectorAll('[aria-label]')).find(e=>e.getAttribute('aria-label').toLowerCase().includes(t));
+  if(all&&all.matches('input,select,textarea'))return all;
+  /* 2. placeholder */
+  all=Array.from(document.querySelectorAll('[placeholder]')).find(e=>e.getAttribute('placeholder').toLowerCase().includes(t));
+  if(all)return all;
+  /* 3. label element */
+  var labels=Array.from(document.querySelectorAll('label,legend'));
+  var lbl=labels.find(l=>l.textContent.replace(/[^a-z0-9 ]/gi,'').toLowerCase().includes(t));
+  if(lbl){
+    if(lbl.htmlFor)return document.getElementById(lbl.htmlFor);
+    var inp=lbl.querySelector('input,select,textarea');if(inp)return inp;
+    var sib=lbl.nextElementSibling;
+    while(sib){inp=sib.querySelector('input,select,textarea');if(inp)return inp;sib=sib.nextElementSibling;}
+  }
+  /* 4. Any visible text near an input */
+  var inputs=Array.from(document.querySelectorAll('input:not([type=hidden]),select,textarea'));
+  return inputs.find(i=>{
+    var wrap=i.closest('div,li,fieldset');
+    return wrap&&wrap.textContent.replace(/[^a-z0-9 ]/gi,'').toLowerCase().includes(t);
+  })||null;
+}
+
+Object.entries(vals).forEach(function(e){
+  var el=findByLabel(e[0]);
+  if(el&&tryFill(el,e[1]))filled++;
+});
+var msg='NotchUp Auto-Fill: '+filled+'/'+Object.keys(vals).length+' fields filled.';
+msg+=filled>0?' Solve the captcha and submit!':' Could not find fields — try the console script.';
+alert(msg);
+})();`;
 }
 
 function appendApplyDebug(text) {
-  // Group debug lines under a collapsible section
-  let section = document.getElementById('apply-debug-section');
-  if (!section) {
-    section = document.createElement('div');
-    section.id = 'apply-debug-section';
-    section.style.cssText = 'margin-top:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden';
-    section.innerHTML = `
-      <button id="apply-debug-toggle" style="width:100%;text-align:left;padding:6px 10px;font-size:11px;
-        font-weight:600;color:var(--text-muted);background:var(--surface-dim,var(--bg));border:none;cursor:pointer;
-        display:flex;justify-content:space-between;align-items:center">
-        <span>Debug log</span><span id="apply-debug-chevron">›</span>
-      </button>
-      <div id="apply-debug-body" style="display:none;padding:8px 10px;font-family:var(--mono);font-size:11px;
-        color:var(--text-muted);line-height:1.7;background:var(--bg);white-space:pre-wrap"></div>`;
-    document.getElementById('apply-progress-list').appendChild(section);
-
-    document.getElementById('apply-debug-toggle').addEventListener('click', () => {
-      applyDebugExpanded = !applyDebugExpanded;
-      document.getElementById('apply-debug-body').style.display = applyDebugExpanded ? 'block' : 'none';
-      document.getElementById('apply-debug-chevron').textContent = applyDebugExpanded ? '∨' : '›';
-    });
-  }
-
-  const body = document.getElementById('apply-debug-body');
-  body.textContent += text + '\n';
-  if (applyDebugExpanded) section.scrollIntoView({ block: 'nearest' });
+  const el = document.createElement('div');
+  el.style.cssText = 'font-size:11px;color:var(--text-muted);font-family:var(--mono);padding:1px 0 1px 20px;word-break:break-all;line-height:1.5';
+  el.textContent = text;
+  const list = document.getElementById('apply-progress-list');
+  list.appendChild(el);
+  list.scrollTop = list.scrollHeight;
 }
 
 async function startAutoApply(jobUrl) {
@@ -2391,11 +3341,70 @@ async function startAutoApply(jobUrl) {
       appendApplyStep('⚠', evt.message || `Skipped: ${evt.field}`);
     } else if (evt.type === 'debug') {
       appendApplyDebug(evt.message || '');
+    } else if (evt.type === 'captcha_detected') {
+      // Show the captcha panel with screenshot + open form link
+      const panel = document.getElementById('apply-captcha-panel');
+      const link = document.getElementById('apply-form-link');
+      const shot = document.getElementById('apply-screenshot');
+      const shotWrap = document.getElementById('apply-screenshot-wrap');
+      panel.classList.remove('hidden');
+      setTimeout(() => panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+      if (evt.form_url) { link.href = evt.form_url; link.textContent = '🌐 Open Form in Browser'; }
+      if (evt.screenshot_url) {
+        shot.src = evt.screenshot_url + '?t=' + Date.now();
+        shotWrap.classList.remove('hidden');
+      }
+      appendApplyStep('🔒', `Captcha detected — ${evt.form_url ? 'open form to solve' : 'solve manually'}`);
     } else if (evt.type === 'paused') {
       const msg = document.getElementById('apply-paused-msg');
       msg.textContent = evt.message || 'Paused — review and submit in the browser';
       msg.classList.remove('hidden');
       appendApplyStep('⏸', 'Paused for your review');
+
+      // Show copy-paste guide if we have filled values
+      if (evt.filled_values && Object.keys(evt.filled_values).length) {
+        const panel = document.getElementById('apply-captcha-panel');
+        const link = document.getElementById('apply-form-link');
+        panel.classList.remove('hidden');
+        if (evt.form_url) link.href = evt.form_url;
+        setTimeout(() => panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+
+        // Build bookmarklet JS that fills the form in user's browser
+        const fillScript = buildFillBookmarklet(evt.filled_values);
+        const bookmarkletHref = 'javascript:' + encodeURIComponent(fillScript);
+
+        // Replace the VNC button with a bookmarklet + copy-to-console option
+        const existingActions = document.getElementById('apply-browser-actions');
+        if (existingActions) existingActions.remove();
+        const actions = document.createElement('div');
+        actions.id = 'apply-browser-actions';
+        actions.style.cssText = 'padding:0 14px 12px;display:flex;flex-direction:column;gap:8px';
+        actions.innerHTML = `
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);margin-bottom:2px">Fill in your browser:</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <a href="${bookmarkletHref}" class="btn btn-primary btn-sm" style="text-decoration:none;flex:1;justify-content:center"
+               title="Drag this to your bookmarks bar, then click it on the form page">
+              🔖 Drag to Bookmarks Bar
+            </a>
+            <button class="btn btn-ghost btn-sm" style="flex:1" onclick="
+              navigator.clipboard.writeText(${JSON.stringify(fillScript)});
+              this.textContent='✅ Copied!';
+              setTimeout(()=>this.textContent='📋 Copy Fill Script',1500);
+            ">📋 Copy Fill Script</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);background:var(--bg);padding:8px 10px;border-radius:6px;line-height:1.6">
+            <strong style="color:var(--text)">How to use:</strong><br>
+            1. Click <strong>🌐 Open Form</strong> to open the form in a new tab<br>
+            2. Drag the 🔖 bookmarklet to your bookmarks bar, then click it<br>
+            &nbsp;&nbsp;&nbsp;<em>— or —</em> press <kbd>F12</kbd> → Console → paste the script<br>
+            3. Form fills automatically · Solve captcha · Submit ✓
+          </div>`;
+        panel.appendChild(actions);
+
+        // Also keep the values table as reference
+        const existingGuide = document.getElementById('apply-fill-guide');
+        if (existingGuide) existingGuide.remove();
+      }
     } else if (evt.type === 'error') {
       const err = document.getElementById('apply-error-msg');
       err.textContent = evt.message || 'An error occurred';
@@ -2405,23 +3414,220 @@ async function startAutoApply(jobUrl) {
   });
 }
 
+// ── Mobile sidebar helpers ────────────────────────────────────────────────────
+
+function _mobileOpenSidebar() {
+  const sidebar  = document.querySelector('.sidebar');
+  const overlay  = document.getElementById('mobile-sidebar-overlay');
+  if (sidebar)  sidebar.classList.add('mobile-open');
+  if (overlay) { overlay.classList.add('open'); overlay.removeAttribute('aria-hidden'); }
+  document.body.style.overflow = 'hidden';
+}
+
+function _mobileCloseSidebar() {
+  const sidebar  = document.querySelector('.sidebar');
+  const overlay  = document.getElementById('mobile-sidebar-overlay');
+  if (sidebar)  sidebar.classList.remove('mobile-open');
+  if (overlay) { overlay.classList.remove('open'); overlay.setAttribute('aria-hidden', 'true'); }
+  document.body.style.overflow = '';
+}
+
+// ── Scan animation helpers ─────────────────────────────────────────────────────
+
+/**
+ * Create or update a site card in the scan animation grid.
+ * @param {string}  siteName  - Display name of the site
+ * @param {string}  siteUrl   - URL (used to extract domain for logo)
+ * @param {'scanning'|'done'|'error'} state
+ * @param {number|null} jobCount  - jobs found (null while scanning)
+ * @param {number|null} _unused
+ */
+function _scanAnimUpsertCard(siteName, siteUrl, state, jobCount, _unused) {
+  const grid = document.getElementById('scan-anim-grid');
+  if (!grid) return;
+
+  const cardId = 'scan-card-' + siteName.replace(/[^a-zA-Z0-9]/g, '-');
+  let card = document.getElementById(cardId);
+
+  if (!card) {
+    card = document.createElement('div');
+    card.id = cardId;
+    card.className = 'scan-anim-card';
+    grid.appendChild(card);
+  }
+
+  // Derive initials for logo fallback
+  const initials = siteName.trim().slice(0, 2).toUpperCase() || '?';
+
+  // Try to get a favicon from the site URL
+  let logoHTML = '';
+  if (siteUrl) {
+    try {
+      const domain = new URL(siteUrl).hostname;
+      logoHTML = `<img src="https://logo.clearbit.com/${domain}" width="28" height="28" alt=""
+        onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+        <span style="display:none;align-items:center;justify-content:center;width:100%;height:100%;font-size:13px;font-weight:700">${initials}</span>`;
+    } catch {
+      logoHTML = `<span style="align-items:center;justify-content:center;width:100%;height:100%;font-size:13px;font-weight:700;display:flex">${initials}</span>`;
+    }
+  } else {
+    logoHTML = `<span style="align-items:center;justify-content:center;width:100%;height:100%;font-size:13px;font-weight:700;display:flex">${initials}</span>`;
+  }
+
+  // Right-side accessory
+  let rightHTML = '';
+  if (state === 'scanning') {
+    rightHTML = `<div class="scan-anim-right"><span class="spinner-sm"></span></div>`;
+  } else if (state === 'done') {
+    const countBadge = jobCount != null
+      ? `<span class="scan-anim-count">${jobCount} job${jobCount !== 1 ? 's' : ''}</span>` : '';
+    rightHTML = `<div class="scan-anim-right">
+      ${countBadge}
+      <span class="scan-anim-check">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </span>
+    </div>`;
+  } else if (state === 'error') {
+    rightHTML = `<div class="scan-anim-right">
+      <span class="scan-anim-err-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </span>
+    </div>`;
+  }
+
+  const statusText = state === 'scanning' ? 'Scanning…' : state === 'done' ? 'Done' : 'Failed';
+
+  card.className = `scan-anim-card ${state}`;
+  card.innerHTML = `
+    <div class="scan-anim-logo">${logoHTML}</div>
+    <div class="scan-anim-body">
+      <div class="scan-anim-name">${esc(siteName)}</div>
+      <div class="scan-anim-status" id="${cardId}-status">
+        ${state === 'scanning' ? '' : ''}${esc(statusText)}
+      </div>
+    </div>
+    ${rightHTML}`;
+}
+
+/** Update only the status text of an existing scan card (e.g. agent steps) */
+function _scanAnimSetStatus(siteName, message) {
+  const cardId   = 'scan-card-' + siteName.replace(/[^a-zA-Z0-9]/g, '-');
+  const statusEl = document.getElementById(`${cardId}-status`);
+  if (statusEl) statusEl.textContent = message;
+}
+
+// ── Skeleton loader helpers ────────────────────────────────────────────────────
+
+/**
+ * Inject N skeleton feed cards into the results container.
+ * Only shown when there are no real cards and no scan is active.
+ */
+function _showFeedSkeletons(container, count = 4) {
+  if (!container || container.dataset.scanActive) return;
+  if (feedResults.length > 0) return; // real data already there
+  // Don't double-inject
+  if (container.querySelector('.skeleton-feed-wrapper')) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'skeleton-feed-wrapper';
+
+  for (let i = 0; i < count; i++) {
+    // Vary widths per card for natural look
+    const w1 = 30 + (i % 3) * 12;   // source label
+    const w2 = 55 + (i % 4) * 10;   // role title
+    const w3 = 35 + (i % 2) * 15;   // location
+    const w4 = 70 + (i % 3) * 8;    // summary line 1
+    const w5 = 50 + (i % 5) * 6;    // summary line 2
+
+    const card = document.createElement('div');
+    card.className = 'skeleton-feed-card';
+    card.innerHTML = `
+      <div class="skeleton-card-top">
+        <div class="skeleton-logo skeleton-shimmer"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-line skeleton-shimmer" style="width:${w1}%;height:9px"></div>
+          <div class="skeleton-line skeleton-shimmer" style="width:${w2}%;height:13px"></div>
+          <div class="skeleton-line skeleton-shimmer" style="width:${w3}%;height:10px"></div>
+          <div class="skeleton-line skeleton-shimmer" style="width:${w4}%;height:10px;margin-top:3px"></div>
+          <div class="skeleton-line skeleton-shimmer" style="width:${w5}%;height:10px"></div>
+        </div>
+        <div class="skeleton-score skeleton-shimmer"></div>
+      </div>
+      <div class="skeleton-actions">
+        <div class="skeleton-btn skeleton-shimmer" style="width:88px"></div>
+        <div class="skeleton-btn skeleton-shimmer" style="width:96px"></div>
+        <div class="skeleton-btn skeleton-shimmer" style="width:72px"></div>
+      </div>`;
+    wrapper.appendChild(card);
+  }
+
+  container.appendChild(wrapper);
+}
+
+/**
+ * Remove skeleton wrapper from container.
+ * Plays a fade-out if cards are still present, then removes.
+ */
+function _hideFeedSkeletons(container) {
+  if (!container) return;
+  const wrapper = container.querySelector('.skeleton-feed-wrapper');
+  if (!wrapper) return;
+  wrapper.classList.add('skeleton-hiding');
+  wrapper.addEventListener('animationend', () => wrapper.remove(), { once: true });
+  // Fallback in case animationend doesn't fire
+  setTimeout(() => wrapper.remove(), 400);
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
-  initTabs();
-  initBrowseTab();
-  initCoverTab();
-  initDemoTab();
-  initResumeTab();
-  initProfileSection();
-  initWizardButtons();
-  initFeedTab();
-  initProfileTab();
-  checkOnboarding().then(() => refreshFeedTab());
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize login screen first — must work even if rest of app fails
+  try { initLoginScreen(); } catch(e) { console.error('initLoginScreen failed:', e); }
+
+  // Hide the main app until auth is confirmed
+  document.getElementById('app').style.display = 'none';
+
+  // Wire sign-out button
+  document.getElementById('signout-btn')?.addEventListener('click', () => signOut());
+
+  // Initialize app UI (tabs, forms, etc.) — each wrapped so one crash doesn't kill the rest
+  try { initTabs(); } catch(e) { console.error('initTabs:', e); }
+  try { initBrowseTab(); } catch(e) { console.error('initBrowseTab:', e); }
+  try { initCoverTab(); } catch(e) { console.error('initCoverTab:', e); }
+  try { initDemoTab(); } catch(e) { console.error('initDemoTab:', e); }
+  try { initResumeTab(); } catch(e) { console.error('initResumeTab:', e); }
+  try { initProfileSection(); } catch(e) { console.error('initProfileSection:', e); }
+  try { initWizardButtons(); } catch(e) { console.error('initWizardButtons:', e); }
+  try { initFeedTab(); } catch(e) { console.error('initFeedTab:', e); }
+  try { initProfileTab(); } catch(e) { console.error('initProfileTab:', e); }
 
   // Apply modal close button
   document.getElementById('apply-close-btn').addEventListener('click', () => {
     document.getElementById('apply-modal').classList.add('hidden');
+  });
+
+  // Check for an existing Supabase session (page reload)
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session) {
+    const name  = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
+    const email = session.user.email ?? '';
+    updateSidebarUser(name, email);
+    _setDashGreeting(name);
+    await registerWithBackend(session); // sets activeUserId
+    if (activeUserId) localStorage.setItem('activeUserId', String(activeUserId));
+    showAppScreen();
+    loadDashboard();
+    if (window._loadResumeMaster) window._loadResumeMaster();
+  } else {
+    showLoginScreen();
+  }
+
+  // Listen for future auth state changes (e.g. token refresh, sign-out from another tab)
+  supabaseClient.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_OUT') {
+      activeUserId = null;
+      showLoginScreen();
+    }
   });
 });
 
@@ -2516,7 +3722,7 @@ async function loadObservability() {
   // ── JD Inputs ──────────────────────────────────────────────────────────────
   const t3 = document.createElement('div');
   t3.className = 'section-title';
-  t3.textContent = 'JD Sent to Gemma';
+  t3.textContent = 'JD sent to AI';
   container.appendChild(t3);
 
   if (!inputs.length) {
@@ -2689,3 +3895,293 @@ async function loadObservability() {
     setTimeout(() => { status.textContent = ''; }, 3000);
   });
 }
+
+// ── Profile hero live update ──────────────────────────────────────────────────
+
+// Track when the profile was last synced
+let _profileLastSyncedAt = null;
+
+/**
+ * Update the new profile hero card (profile-hero-card) with current data.
+ * Reads from DOM values already populated by loadProfileTab, plus live resume text.
+ * Safe to call multiple times — only updates elements that exist.
+ */
+function updateProfileHero(opts = {}) {
+  const {
+    name       = document.getElementById('profile-name')?.value.trim()  || '',
+    email      = document.getElementById('profile-email')?.value.trim() || '',
+    resumeText = document.getElementById('profile-resume')?.value       || '',
+  } = opts;
+
+  // Avatar initials
+  const avatarEl = document.getElementById('profile-hero-avatar');
+  if (avatarEl) avatarEl.textContent = getInitials(name || email || '');
+
+  // Name + email
+  const nameEl  = document.getElementById('profile-hero-name');
+  const emailEl = document.getElementById('profile-hero-email');
+  if (nameEl)  nameEl.textContent  = name  || '—';
+  if (emailEl) emailEl.textContent = email || '';
+
+  // Resume pill
+  const resumePill = document.getElementById('profile-hero-resume-pill');
+  if (resumePill) {
+    const chars = resumeText.trim().length;
+    const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    if (chars > 0) {
+      resumePill.innerHTML = `${svgIcon} Resume: ${chars.toLocaleString()} chars`;
+      resumePill.className = 'profile-hero-pill profile-hero-pill--resume' + (chars >= 1000 ? ' has-resume' : ' no-resume');
+    } else {
+      resumePill.innerHTML = `${svgIcon} Resume: empty`;
+      resumePill.className = 'profile-hero-pill profile-hero-pill--resume no-resume';
+    }
+  }
+
+  // Automator connection pill — check if server is reachable
+  const automatorPill = document.getElementById('profile-hero-automator-pill');
+  if (automatorPill) {
+    const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>`;
+    // Use a cached check or kick one off
+    _checkAutomatorConnection().then(connected => {
+      if (!automatorPill) return;
+      if (connected) {
+        automatorPill.innerHTML = `${svgIcon} Job Automator: Connected`;
+        automatorPill.className = 'profile-hero-pill profile-hero-pill--automator connected';
+      } else {
+        automatorPill.innerHTML = `${svgIcon} Job Automator: Offline`;
+        automatorPill.className = 'profile-hero-pill profile-hero-pill--automator offline';
+      }
+    });
+  }
+
+  // Last synced text
+  const syncEl = document.getElementById('profile-hero-sync');
+  if (syncEl) {
+    if (_profileLastSyncedAt) {
+      const diffMs  = Date.now() - _profileLastSyncedAt;
+      const diffMin = Math.floor(diffMs / 60000);
+      const dotHTML = `<span class="profile-hero-sync-dot"></span>`;
+      if (diffMin < 1) {
+        syncEl.innerHTML = `${dotHTML} Synced just now`;
+      } else if (diffMin === 1) {
+        syncEl.innerHTML = `${dotHTML} Last synced 1 min ago`;
+      } else if (diffMin < 60) {
+        syncEl.innerHTML = `${dotHTML} Last synced ${diffMin} min ago`;
+      } else {
+        const hrs = Math.floor(diffMin / 60);
+        syncEl.innerHTML = `${dotHTML} Last synced ${hrs}h ago`;
+      }
+    } else {
+      syncEl.innerHTML = '';
+    }
+  }
+}
+
+let _automatorConnected = null;
+let _lastConnectionCheck = 0;
+
+async function _checkAutomatorConnection() {
+  const now = Date.now();
+  // Cache the result for 60 seconds
+  if (_automatorConnected !== null && now - _lastConnectionCheck < 60000) {
+    return _automatorConnected;
+  }
+  try {
+    const r = await fetch('/api/health', { signal: AbortSignal.timeout(4000) });
+    _automatorConnected = r.ok;
+  } catch {
+    _automatorConnected = false;
+  }
+  _lastConnectionCheck = Date.now();
+  return _automatorConnected;
+}
+
+// Patch loadProfileTab to also call updateProfileHero after data loads
+const _origLoadProfileTab = loadProfileTab;
+loadProfileTab = async function(...args) {
+  await _origLoadProfileTab.apply(this, args);
+  // Derive from loaded form values
+  const resumeText = document.getElementById('profile-resume')?.value || '';
+  updateProfileHero({ resumeText });
+  _profileLastSyncedAt = Date.now();
+  // Update sync text 1 second later (so it shows "just now")
+  setTimeout(() => updateProfileHero({ resumeText }), 1000);
+};
+
+// ── Cover Letter: job picker from feed ───────────────────────────────────────
+
+let _coverFeedJobs = [];   // cached feed jobs for picker
+let _coverFeedLoaded = false;
+
+async function loadCoverFeedJobs() {
+  if (!activeUserId) return;
+  const selectEl    = document.getElementById('cover-job-select');
+  const statusEl    = document.getElementById('cover-job-picker-status');
+  if (!selectEl) return;
+
+  if (statusEl) statusEl.innerHTML = `<span class="spinner-sm"></span> Loading jobs from feed…`;
+
+  try {
+    const cached = await api.get(`/api/feed/cached?userId=${activeUserId}`);
+    const jobs = Array.isArray(cached) ? cached.filter(j => j.job && (j.site_name || j.job.title)) : [];
+    _coverFeedJobs = jobs;
+    _coverFeedLoaded = true;
+
+    // Rebuild select options
+    if (!jobs.length) {
+      selectEl.innerHTML = `<option value="">— No scanned jobs yet. Run a scan first. —</option>`;
+      if (statusEl) statusEl.textContent = '0 jobs in feed';
+      return;
+    }
+
+    selectEl.innerHTML = `<option value="">— Select a scanned job to auto-fill —</option>` +
+      jobs.map((j, i) => {
+        const company = j.site_name || '';
+        const role    = j.job?.title || '—';
+        const score   = j.match_score != null ? ` · ${j.match_score}%` : '';
+        const label   = company ? `${company} — ${role}${score}` : `${role}${score}`;
+        return `<option value="${i}">${esc(label.length > 80 ? label.slice(0,80)+'…' : label)}</option>`;
+      }).join('');
+
+    if (statusEl) statusEl.textContent = `${jobs.length} job${jobs.length !== 1 ? 's' : ''} available`;
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Failed to load feed jobs';
+    console.error('loadCoverFeedJobs:', e);
+  }
+}
+
+function initCoverJobPicker() {
+  const selectEl  = document.getElementById('cover-job-select');
+  const refreshEl = document.getElementById('cover-job-refresh-btn');
+
+  if (!selectEl) return;
+
+  // Load jobs when user switches to cover tab
+  selectEl.addEventListener('focus', () => {
+    if (!_coverFeedLoaded && activeUserId) loadCoverFeedJobs();
+  });
+
+  // Auto-fill company + role when a job is picked
+  selectEl.addEventListener('change', () => {
+    const idx = parseInt(selectEl.value, 10);
+    if (isNaN(idx) || idx < 0) return;
+    const j = _coverFeedJobs[idx];
+    if (!j) return;
+
+    const companyInput = document.getElementById('cover-company');
+    const roleInput    = document.getElementById('cover-role');
+    if (companyInput) companyInput.value = j.site_name || '';
+    if (roleInput)    roleInput.value    = j.job?.title || '';
+
+    // Visual confirmation
+    const statusEl = document.getElementById('cover-job-picker-status');
+    if (statusEl) {
+      statusEl.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Auto-filled from job feed`;
+      statusEl.style.color = 'var(--success)';
+      setTimeout(() => { if (statusEl) { statusEl.textContent = `${_coverFeedJobs.length} jobs available`; statusEl.style.color = ''; } }, 2500);
+    }
+  });
+
+  // Refresh button
+  refreshEl?.addEventListener('click', () => {
+    _coverFeedLoaded = false;
+    loadCoverFeedJobs();
+  });
+}
+
+// Patch initCoverTab to add job picker init and improved output rendering.
+// We hook in AFTER the original runs rather than modifying it.
+const _origInitCoverTab = initCoverTab;
+initCoverTab = function() {
+  // Run original (preserves all existing generate/copy/download handlers)
+  _origInitCoverTab();
+
+  // Initialize the job picker UI
+  initCoverJobPicker();
+
+  // Patch the generate button to use the new preview card render instead of plain textarea.
+  // We do this by intercepting the POST result — we wrap the btn's click listener last.
+  const btn      = document.getElementById('cover-btn');
+  const resultEl = document.getElementById('cover-result');
+  if (!btn || !resultEl) return;
+
+  btn.addEventListener('click', async () => {
+    const company = document.getElementById('cover-company')?.value.trim();
+    const role    = document.getElementById('cover-role')?.value.trim();
+    if (!company || !role) return;  // original handler already validates + toasts
+
+    // Wait a tick for the original handler to fire first (it also fires on this click)
+    // We override the result rendering by observing resultEl mutations
+    // after the API returns — but simpler: we patch by adding a MutationObserver
+    // that replaces the inner card once the original plain result appears.
+    const observer = new MutationObserver(() => {
+      const existingCard = resultEl.querySelector('.card.result-card');
+      if (!existingCard) return;
+      const letterBox = existingCard.querySelector('.cover-letter-box');
+      if (!letterBox) return;
+
+      // Extract the letter text
+      const letterText = letterBox.textContent;
+      if (!letterText || letterText.trim().length < 50) return;
+
+      observer.disconnect();
+
+      // Re-render as the new styled preview card
+      const charCount = letterText.trim().length;
+      const newCard = document.createElement('div');
+      newCard.className = 'cover-preview-card';
+      newCard.innerHTML = `
+        <div class="cover-preview-header">
+          <div class="cover-preview-meta">
+            <div class="cover-preview-role">${esc(role)}</div>
+            <div class="cover-preview-company">${esc(company)}</div>
+          </div>
+          <div class="cover-preview-actions">
+            <span class="cover-char-count" id="cover-live-char-count">${charCount.toLocaleString()} chars</span>
+            <button class="btn btn-secondary btn-sm" id="cover-copy-btn-v2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy
+            </button>
+            <button class="btn btn-secondary btn-sm" id="cover-dl-btn-v2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download .txt
+            </button>
+          </div>
+        </div>
+        <div class="cover-letter-body" id="cover-letter-body-text"></div>`;
+
+      // Safely set text content (no XSS risk since we use textContent)
+      newCard.querySelector('#cover-letter-body-text').textContent = letterText;
+
+      resultEl.innerHTML = '';
+      resultEl.appendChild(newCard);
+      resultEl.classList.remove('hidden');
+
+      // Wire copy
+      document.getElementById('cover-copy-btn-v2')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(letterText).then(() => toast('Copied to clipboard'));
+      });
+
+      // Wire download
+      document.getElementById('cover-dl-btn-v2')?.addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([letterText], { type: 'text/plain' }));
+        a.download = `cover_letter_${company.toLowerCase().replace(/\s+/g, '_')}.txt`;
+        a.click();
+      });
+    });
+
+    observer.observe(resultEl, { childList: true, subtree: true });
+    // Auto-disconnect observer after 60s to avoid leaks
+    setTimeout(() => observer.disconnect(), 60000);
+  });
+};
+
+// Load cover feed jobs whenever the cover tab becomes active
+const _origSwitchTab = switchTab;
+switchTab = function(tab) {
+  _origSwitchTab(tab);
+  if (tab === 'cover' && activeUserId && !_coverFeedLoaded) {
+    loadCoverFeedJobs();
+  }
+};

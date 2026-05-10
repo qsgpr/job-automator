@@ -3,31 +3,82 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Job Automator</title>
+  <title>NotchUp</title>
+  <link rel="icon" type="image/png" href="/notchup-logo.png" />
+  <link rel="apple-touch-icon" href="/notchup-logo@2x.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;0,14..32,800;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
+
+<!-- ── Login screen ──────────────────────────────────────────────────────────── -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="/notchup-logo.png" alt="NotchUp" class="logo-img">
+      <span class="logo-text">NotchUp</span>
+    </div>
+
+    <div id="login-error" class="login-error hidden"></div>
+
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="label">Email</label>
+      <input id="login-email" class="input" type="email" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group" style="margin-bottom:20px">
+      <label class="label">Password</label>
+      <input id="login-password" class="input" type="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn btn-primary" id="login-submit-btn" onclick="handleLoginSubmit()" style="width:100%;justify-content:center">Sign In</button>
+      <button class="btn btn-demo" id="login-demo-btn" onclick="handleDemoLogin()" style="width:100%;justify-content:center">✨ Try Demo</button>
+    </div>
+
+    <div class="login-toggle">
+      <span id="login-toggle-text">Don't have an account?</span>
+      <button class="btn-link" id="login-toggle-btn" onclick="toggleLoginMode()">Sign up</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Sidebar overlay (mobile tap-to-close) ─────────────────────────────── -->
+<div id="mobile-sidebar-overlay" class="mobile-sidebar-overlay" aria-hidden="true"></div>
+
 <div id="app">
+
+  <!-- ── Mobile top header ─────────────────────────────────────────────────── -->
+  <header class="mobile-header" id="mobile-header">
+    <div class="mobile-header-logo">
+      <img src="/notchup-logo.png" alt="NotchUp" class="logo-img">
+      <span class="logo-text">NotchUp</span>
+    </div>
+    <button class="mobile-hamburger" id="mobile-hamburger-btn" aria-label="Open navigation">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </header>
 
   <!-- ── Sidebar ───────────────────────────────────────────────────────────── -->
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <span class="logo-mark">JA</span>
-      <span class="logo-text">Job Automator</span>
+      <img src="/notchup-logo.png" alt="NotchUp" class="logo-img">
+      <span class="logo-text">NotchUp</span>
     </div>
 
-    <!-- Profile picker -->
-    <div class="profile-section">
-      <div class="profile-section-label">Profile</div>
+    <!-- Profile picker (hidden — user is set automatically from Supabase auth) -->
+    <div class="profile-section" style="display:none">
       <select id="user-select" class="user-select"></select>
       <button class="btn btn-ghost btn-sm" id="add-user-btn">+ New</button>
     </div>
 
     <nav class="nav">
-      <div class="nav-section-label">Discover</div>
-      <button class="nav-btn active" data-tab="feed">
+      <button class="nav-btn active" data-tab="dashboard">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </button>
+      <button class="nav-btn" data-tab="feed">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
         Job Feed
       </button>
@@ -39,42 +90,126 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         Search
       </button>
-      <button class="nav-btn" data-tab="history">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        History
-      </button>
-
-      <div class="nav-divider"></div>
-      <div class="nav-section-label">Tools</div>
-      <button class="nav-btn" data-tab="cover">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-        Cover Letter
-      </button>
       <button class="nav-btn" data-tab="resume">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
         Resume
       </button>
-      <button class="nav-btn" data-tab="demo">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        Auto-Fill
+      <button class="nav-btn" data-tab="cover">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Cover Letter
       </button>
-
-      <div class="nav-divider"></div>
-      <div class="nav-section-label">Account</div>
       <button class="nav-btn" data-tab="profile">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         Profile
       </button>
-      <button class="nav-btn" data-tab="observe">
+
+      <div class="nav-spacer"></div>
+
+      <!-- Hidden internal tools — still accessible via URL/tab switch if needed -->
+      <div class="nav-tools-toggle" id="nav-tools-toggle">
+        <button class="nav-tools-btn" id="nav-tools-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+          More
+        </button>
+        <div class="nav-tools-flyout hidden" id="nav-tools-flyout">
+          <button class="nav-flyout-item" data-tab="history">History</button>
+          <button class="nav-flyout-item" data-tab="demo">Auto-Fill Demo</button>
+        </div>
+      </div>
+
+      <button class="nav-btn nav-settings-btn" data-tab="observe">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
-        Admin
+        Settings
       </button>
     </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user-block" id="sidebar-user-block">
+        <div class="sidebar-avatar" id="sidebar-avatar"></div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name" id="sidebar-user-name"></div>
+          <div class="sidebar-user-email" id="sidebar-user-email"></div>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm signout-btn" id="signout-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Sign Out
+      </button>
+    </div>
 
   </aside>
 
   <!-- ── Main ─────────────────────────────────────────────────────────────── -->
   <main class="main">
+
+    <!-- Dashboard tab -->
+    <section class="tab-panel active" id="tab-dashboard">
+      <!-- Hero -->
+      <div class="dash-hero">
+        <div class="dash-hero-text">
+          <div class="dash-greeting" id="dash-greeting">Good morning</div>
+          <h1 class="dash-hero-title" id="dash-hero-title">Your AI Job Search</h1>
+          <p class="dash-hero-sub">Everything in one place — scan sites, track applications, generate letters.</p>
+        </div>
+        <button class="btn btn-primary dash-scan-btn" id="dash-scan-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Start Scan
+        </button>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="dash-stats" id="dash-stats">
+        <div class="dash-stat-card">
+          <div class="dash-stat-icon dash-stat-icon--blue">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+          </div>
+          <div class="dash-stat-body">
+            <div class="dash-stat-value" id="dash-stat-total">—</div>
+            <div class="dash-stat-label">Jobs Scanned</div>
+          </div>
+        </div>
+        <div class="dash-stat-card">
+          <div class="dash-stat-icon dash-stat-icon--green">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div class="dash-stat-body">
+            <div class="dash-stat-value" id="dash-stat-matches">—</div>
+            <div class="dash-stat-label">High Matches <span class="dash-stat-hint">≥70</span></div>
+          </div>
+        </div>
+        <div class="dash-stat-card">
+          <div class="dash-stat-icon dash-stat-icon--purple">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <div class="dash-stat-body">
+            <div class="dash-stat-value" id="dash-stat-apps">—</div>
+            <div class="dash-stat-label">Applications Tracked</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Setup checklist (shown when setup is incomplete) -->
+      <div class="dash-checklist" id="dash-checklist">
+        <div class="dash-checklist-title">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Get started
+        </div>
+        <div class="dash-steps" id="dash-steps">
+          <!-- injected by JS -->
+        </div>
+      </div>
+
+      <!-- Top matches -->
+      <div class="dash-section" id="dash-matches-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Top Matches</span>
+          <button class="btn btn-ghost btn-sm" data-tab="feed" id="dash-view-all-btn">View all →</button>
+        </div>
+        <div id="dash-top-matches">
+          <!-- injected by JS -->
+        </div>
+      </div>
+    </section>
 
     <!-- Board tab -->
     <section class="tab-panel" id="tab-board">
@@ -123,7 +258,24 @@
     <section class="tab-panel" id="tab-cover">
       <div class="panel-header">
         <h1 class="panel-title">Cover Letter</h1>
-        <p class="panel-sub">Gemma writes a tailored 3–4 paragraph letter from your resume and the role.</p>
+        <p class="panel-sub">AI writes a tailored 3–4 paragraph letter from your resume and the role.</p>
+      </div>
+
+      <!-- From Job Feed picker -->
+      <div class="cover-job-picker card" id="cover-job-picker">
+        <div class="cover-job-picker-label">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+          From Job Feed
+        </div>
+        <div class="cover-job-picker-row">
+          <select id="cover-job-select" class="input cover-job-select">
+            <option value="">— Select a scanned job to auto-fill —</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="cover-job-refresh-btn" title="Reload jobs from feed">
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+        </div>
+        <div id="cover-job-picker-status" class="cover-job-picker-status"></div>
       </div>
 
       <div class="card">
@@ -205,7 +357,7 @@
     <section class="tab-panel" id="tab-resume">
       <div class="panel-header">
         <h1 class="panel-title">Resume Builder</h1>
-        <p class="panel-sub">Upload any resume files — Gemma extracts only what's new and merges it into your master.</p>
+        <p class="panel-sub">Upload any resume files — AI extracts only what's new and merges it into your master.</p>
       </div>
 
       <div class="card">
@@ -226,7 +378,7 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
             Extract &amp; Update Master
           </button>
-          <span style="font-size:12px;color:var(--text-muted);margin-left:12px" id="merge-hint">Gemma will find only new info not already in your master</span>
+          <span style="font-size:12px;color:var(--text-muted);margin-left:12px" id="merge-hint">AI will find only new info not already in your master</span>
         </div>
       </div>
 
@@ -247,28 +399,49 @@
       </div>
     </section>
 
-    <!-- Admin tab -->
+    <!-- Settings tab (was Admin/Observe) -->
     <section class="tab-panel" id="tab-observe">
       <div class="panel-header">
-        <h1 class="panel-title">Admin</h1>
-        <p class="panel-sub">Job sites, per-run traces, LLM latency, token usage, and selector drift alerts.</p>
+        <h1 class="panel-title">Settings</h1>
+        <p class="panel-sub">Configure job sites, view scan traces, token usage, and selector drift alerts.</p>
       </div>
       <div id="observe-content"></div>
     </section>
 
     <!-- Profile tab -->
     <section class="tab-panel" id="tab-profile">
-      <div class="panel-header">
-        <h1 class="panel-title">Profile</h1>
-        <p class="panel-sub">Edit your contact info, resume, and job-search preferences.</p>
+
+      <!-- Hero -->
+      <div class="profile-hero-card" id="profile-hero-card">
+        <div class="profile-hero-left">
+          <div class="profile-hero-avatar-lg" id="profile-hero-avatar"></div>
+          <div class="profile-hero-info">
+            <h1 class="profile-hero-name-lg" id="profile-hero-name">—</h1>
+            <div class="profile-hero-email-lg" id="profile-hero-email"></div>
+            <div class="profile-hero-pills" id="profile-hero-pills">
+              <span class="profile-hero-pill profile-hero-pill--resume" id="profile-hero-resume-pill">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Resume: —
+              </span>
+              <span class="profile-hero-pill profile-hero-pill--automator" id="profile-hero-automator-pill">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+                Job Automator: Offline
+              </span>
+            </div>
+            <div class="profile-hero-sync" id="profile-hero-sync"></div>
+          </div>
+        </div>
       </div>
 
-      <!-- Contact info -->
-      <div class="card" style="margin-bottom:12px">
-        <div class="section-title" style="margin-top:0">Contact</div>
+      <!-- Contact -->
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Contact
+        </div>
         <div class="form-grid">
           <div class="form-group">
-            <label class="label">Name</label>
+            <label class="label">Full name</label>
             <input id="profile-name" class="input" placeholder="Your full name" />
           </div>
           <div class="form-group">
@@ -284,124 +457,79 @@
             <input id="profile-linkedin" class="input" placeholder="linkedin.com/in/yourname" />
           </div>
         </div>
-
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-soft)">
-          <div class="label" style="margin-bottom:10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Address</div>
-          <div class="form-group" style="margin-bottom:10px">
-            <label class="label">Street</label>
-            <input id="profile-street" class="input" placeholder="123 Main St" />
-          </div>
-          <div class="form-grid">
-            <div class="form-group">
-              <label class="label">City</label>
-              <input id="profile-city" class="input" placeholder="San Juan" />
-            </div>
-            <div class="form-group">
-              <label class="label">State / Province</label>
-              <input id="profile-state" class="input" placeholder="PR" />
-            </div>
-            <div class="form-group">
-              <label class="label">ZIP / Postal</label>
-              <input id="profile-zip" class="input" placeholder="00901" />
-            </div>
-          </div>
-        </div>
-
-        <div style="margin-top:14px">
+        <div class="profile-section-footer">
           <button class="btn btn-primary btn-sm" id="profile-save-contact-btn">Save Contact</button>
-          <span id="profile-contact-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+          <span class="profile-save-status" id="profile-contact-status"></span>
         </div>
       </div>
 
-      <!-- Application facts -->
-      <div class="card" style="margin-bottom:12px">
-        <div class="section-title" style="margin-top:0">Application Info <span class="label-hint">auto-fills job application questions</span></div>
-
-        <div class="form-grid" style="margin-bottom:14px">
-          <div class="form-group">
-            <label class="label">Work authorized in US?</label>
-            <div class="wizard-radio-group" id="profile-work-auth"></div>
-          </div>
-          <div class="form-group">
-            <label class="label">Requires visa sponsorship?</label>
-            <div class="wizard-radio-group" id="profile-sponsorship"></div>
-          </div>
-          <div class="form-group">
-            <label class="label">Available start date</label>
-            <input id="profile-available-start" class="input" placeholder="Immediately or 2025-09-01" />
-          </div>
-          <div class="form-group">
-            <label class="label">Years of experience as Software Engineer</label>
-            <div class="wizard-radio-group" id="profile-years-exp"></div>
-          </div>
+      <!-- Location -->
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          Location
         </div>
-
         <div class="form-group" style="margin-bottom:14px">
-          <label class="label">TypeScript / JavaScript proficiency</label>
-          <div class="wizard-radio-group" id="profile-ts-proficiency"></div>
+          <label class="label">Street address</label>
+          <input id="profile-street" class="input" placeholder="123 Main St" />
         </div>
-
-        <div class="form-group" style="margin-bottom:14px">
-          <label class="label">LLM / AI frameworks you've used in production <span class="label-hint">select all that apply</span></label>
-          <div class="dept-grid" id="profile-llm-frameworks"></div>
+        <div class="form-grid" style="grid-template-columns:1fr 80px 90px">
+          <div class="form-group">
+            <label class="label">City</label>
+            <input id="profile-city" class="input" placeholder="San Juan" />
+          </div>
+          <div class="form-group">
+            <label class="label">State</label>
+            <input id="profile-state" class="input" placeholder="PR" />
+          </div>
+          <div class="form-group">
+            <label class="label">ZIP</label>
+            <input id="profile-zip" class="input" placeholder="00901" />
+          </div>
         </div>
-
-        <div class="form-group" style="margin-bottom:14px">
-          <label class="label">Additional info <span class="label-hint">shown on "anything else to share?" fields</span></label>
-          <textarea id="profile-additional-info" class="input" rows="3"
-            placeholder="E.g. I'm based in Puerto Rico, open to full relocation…" style="resize:vertical"></textarea>
-        </div>
-
-        <div>
-          <button class="btn btn-primary btn-sm" id="profile-save-appinfo-btn">Save Application Info</button>
-          <span id="profile-appinfo-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        <div class="profile-section-footer">
+          <button class="btn btn-primary btn-sm" id="profile-save-location-btn">Save Location</button>
+          <span class="profile-save-status" id="profile-location-status"></span>
         </div>
       </div>
 
       <!-- Resume -->
-      <div class="card" style="margin-bottom:12px">
-        <div class="section-title" style="margin-top:0">Resume</div>
-        <textarea id="profile-resume" class="resume-textarea" style="height:220px"
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Resume
+          <span class="profile-resume-chars" id="profile-resume-chars"></span>
+        </div>
+        <textarea id="profile-resume" class="profile-resume-textarea"
           placeholder="Paste your resume text here…" spellcheck="false"></textarea>
-        <div style="margin-top:10px">
+        <div class="profile-section-footer">
           <button class="btn btn-primary btn-sm" id="profile-save-resume-btn">Save Resume</button>
-          <span id="profile-resume-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+          <span class="profile-save-status" id="profile-resume-status"></span>
         </div>
       </div>
 
-      <!-- Preferences -->
-      <div class="card">
-        <div class="section-title" style="margin-top:0">Job Preferences</div>
+      <!-- Work Preferences -->
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          Work Preferences
+        </div>
 
-        <div class="form-group">
+        <div class="form-group" style="margin-bottom:18px">
           <label class="label">Work type</label>
           <div class="wizard-radio-group" id="profile-work-type"></div>
           <div class="mode-label">Filter mode</div>
           <div class="mode-toggle" id="profile-work-type-mode"></div>
         </div>
 
-        <div class="form-group" style="margin-top:16px">
+        <div class="form-group" style="margin-bottom:18px">
           <label class="label">Experience level</label>
           <div class="wizard-radio-group" id="profile-exp-level"></div>
           <div class="mode-label">Filter mode</div>
           <div class="mode-toggle" id="profile-exp-level-mode"></div>
         </div>
 
-        <div class="form-group" style="margin-top:16px">
-          <label class="label">Preferred location <span class="label-hint">leave blank for any</span></label>
-          <input id="profile-location" class="input" placeholder="Austin, TX" />
-          <div class="mode-label">Filter mode</div>
-          <div class="mode-toggle" id="profile-location-mode"></div>
-        </div>
-
-        <div class="form-group" style="margin-top:16px">
-          <label class="label">Department interests <span class="label-hint">leave all unchecked for any</span></label>
-          <div class="dept-grid" id="profile-departments"></div>
-          <div class="mode-label">Filter mode</div>
-          <div class="mode-toggle" id="profile-departments-mode"></div>
-        </div>
-
-        <div class="form-group" style="margin-top:16px">
+        <div class="form-group" style="margin-bottom:18px">
           <label class="label">Minimum salary</label>
           <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
             <span style="font-size:14px;color:var(--text-dim)">$</span>
@@ -416,15 +544,91 @@
           </div>
         </div>
 
-        <div style="margin-top:18px">
+        <div class="form-group" style="margin-bottom:18px">
+          <label class="label">Preferred location <span class="label-hint">leave blank for any</span></label>
+          <input id="profile-location" class="input" placeholder="Austin, TX" style="margin-top:4px" />
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-location-mode"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="label">Department interests <span class="label-hint">leave all unchecked for any</span></label>
+          <div class="dept-grid" id="profile-departments"></div>
+          <div class="mode-label">Filter mode</div>
+          <div class="mode-toggle" id="profile-departments-mode"></div>
+        </div>
+
+        <div class="profile-section-footer">
           <button class="btn btn-primary btn-sm" id="profile-save-prefs-btn">Save Preferences</button>
-          <span id="profile-prefs-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+          <span class="profile-save-status" id="profile-prefs-status"></span>
         </div>
       </div>
+
+      <!-- Application Details -->
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Application Details
+        </div>
+
+        <div class="form-grid" style="margin-bottom:18px">
+          <div class="form-group">
+            <label class="label">Work authorized in US?</label>
+            <div class="wizard-radio-group" id="profile-work-auth"></div>
+          </div>
+          <div class="form-group">
+            <label class="label">Requires visa sponsorship?</label>
+            <div class="wizard-radio-group" id="profile-sponsorship"></div>
+          </div>
+          <div class="form-group">
+            <label class="label">Available start date</label>
+            <input id="profile-available-start" class="input" placeholder="Immediately or 2025-09-01" />
+          </div>
+          <div class="form-group">
+            <label class="label">Years of experience</label>
+            <div class="wizard-radio-group" id="profile-years-exp"></div>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="label">Additional info <span class="label-hint">shown on open-ended fields</span></label>
+          <textarea id="profile-additional-info" class="input" rows="3"
+            placeholder="E.g. I'm based in Puerto Rico, open to full relocation…" style="resize:vertical;margin-top:4px"></textarea>
+        </div>
+
+        <div class="profile-section-footer">
+          <button class="btn btn-primary btn-sm" id="profile-save-appinfo-btn">Save Details</button>
+          <span class="profile-save-status" id="profile-appinfo-status"></span>
+        </div>
+      </div>
+
+      <!-- Skills -->
+      <div class="profile-section-card">
+        <div class="profile-section-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Skills
+        </div>
+
+        <div class="form-group" style="margin-bottom:18px">
+          <label class="label">TypeScript / JavaScript proficiency</label>
+          <div class="wizard-radio-group" id="profile-ts-proficiency"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="label">LLM / AI frameworks used in production <span class="label-hint">select all that apply</span></label>
+          <div class="dept-grid" id="profile-llm-frameworks"></div>
+        </div>
+
+        <div class="profile-section-footer">
+          <button class="btn btn-primary btn-sm" id="profile-save-skills-btn">Save Skills</button>
+          <span class="profile-save-status" id="profile-skills-status"></span>
+        </div>
+      </div>
+
     </section>
 
     <!-- Job Feed tab -->
-    <section class="tab-panel active" id="tab-feed">
+    <section class="tab-panel" id="tab-feed">
       <div class="panel-header">
         <h1 class="panel-title">Job Feed</h1>
         <p class="panel-sub">Scans all active job sites and scores matches against your profile.</p>
@@ -452,6 +656,9 @@
         <div id="feed-progress-label" style="font-size:12px;color:var(--text-dim);margin-top:6px"></div>
       </div>
 
+      <!-- Animated scan site cards (injected by JS during scan) -->
+      <div id="feed-scan-cards" class="hidden"></div>
+
       <div id="feed-summary" class="hidden" style="margin-top:12px"></div>
 
       <div id="feed-sort-bar" class="hidden">
@@ -467,15 +674,61 @@
     </section>
 
   </main>
+
+  <!-- ── Mobile bottom nav ──────────────────────────────────────────────────── -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav" aria-label="Bottom navigation">
+    <button class="mobile-nav-item active" data-tab="dashboard">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      <span class="mobile-nav-label">Home</span>
+    </button>
+    <button class="mobile-nav-item" data-tab="feed">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+      <span class="mobile-nav-label">Feed</span>
+    </button>
+    <button class="mobile-nav-item" data-tab="board">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+      <span class="mobile-nav-label">Board</span>
+    </button>
+    <button class="mobile-nav-item" data-tab="browse">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <span class="mobile-nav-label">Search</span>
+    </button>
+    <button class="mobile-nav-item" data-tab="profile">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <span class="mobile-nav-label">Profile</span>
+    </button>
+  </nav>
+
 </div>
 
 <!-- Apply progress modal -->
 <div id="apply-modal" class="modal-overlay hidden">
-  <div class="modal-box" style="max-width:480px">
-    <div style="font-size:16px;font-weight:700;margin-bottom:16px">Auto-Apply in Progress</div>
-    <div id="apply-progress-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
-    <div id="apply-paused-msg" class="hidden" style="font-size:13px;color:var(--success);font-weight:600;margin-bottom:12px"></div>
-    <div id="apply-error-msg"  class="hidden" style="font-size:12px;color:var(--danger);margin-bottom:12px"></div>
+  <div class="modal-box" style="max-width:680px;width:96vw;max-height:88vh;display:flex;flex-direction:column;padding:28px 32px">
+    <div style="font-size:16px;font-weight:700;margin-bottom:14px;flex-shrink:0">Auto-Apply in Progress</div>
+    <div id="apply-progress-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;overflow-y:auto;max-height:30vh;padding-right:4px"></div>
+    <div id="apply-paused-msg" class="hidden" style="font-size:13px;color:var(--success);font-weight:600;margin-bottom:8px;flex-shrink:0"></div>
+    <div id="apply-error-msg"  class="hidden" style="font-size:12px;color:var(--danger);margin-bottom:8px;flex-shrink:0"></div>
+
+    <!-- Captcha / manual review panel -->
+    <div id="apply-captcha-panel" class="hidden" style="margin-bottom:16px;border:1px solid var(--warning);border-radius:10px;overflow:hidden">
+      <div style="background:rgba(245,158,11,0.08);padding:12px 14px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px">🔒</span>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--warning)">Human verification required</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px">The form was filled — solve the captcha and submit manually</div>
+        </div>
+      </div>
+      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+        <a id="apply-form-link" href="#" target="_blank" class="btn btn-primary btn-sm" style="text-decoration:none;justify-content:center">
+          🌐 Open Form in New Tab
+        </a>
+      </div>
+      <div id="apply-screenshot-wrap" class="hidden" style="padding:0 14px 12px">
+        <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.08em">Form state at pause</div>
+        <img id="apply-screenshot" src="" alt="Form screenshot" style="width:100%;border-radius:6px;border:1px solid var(--border)">
+      </div>
+    </div>
+
     <div class="wizard-footer" style="margin-top:0;padding-top:12px">
       <div style="font-size:11px;color:var(--text-muted)" id="apply-field-count"></div>
       <button class="btn btn-ghost btn-sm" id="apply-close-btn">Close</button>

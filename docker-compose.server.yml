@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+
+  # ── Job Automator (Express + SQLite) ─────────────────────────────────────────
+  app:
+    build: .
+    container_name: job-automator-app
+    restart: unless-stopped
+    ports:
+      - "3010:3000"
+      - "6081:6080"
+    environment:
+      NODE_ENV: production
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY}
+      PORT: 3000
+      DB_PATH: /app/data/observability.db
+      DISPLAY: ":99"
+    volumes:
+      - job_data:/app/data
+      - resume:/app/resume.txt
+    networks:
+      - job_net
+
+  # ── Cloudflare Tunnel ─────────────────────────────────────────────────────────
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: job-automator-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+    networks:
+      - job_net
+
+volumes:
+  job_data:
+  resume:
+
+networks:
+  job_net:
+    name: job_automator_network

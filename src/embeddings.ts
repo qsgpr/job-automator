@@ -12,23 +12,21 @@ db.exec(`
   );
 `);
 
-// ── Ollama embedding via REST ─────────────────────────────────────────────────
-// Uses /api/embed — much faster than generation since no tokens are sampled.
-// gemma4:26b produces 5120-dim vectors. In production, swap for a dedicated
-// embedding model (nomic-embed-text, mxbai-embed-large) to reduce latency.
+// ── Google text-embedding-004 via REST ───────────────────────────────────────
+// 768-dim vectors, $0.00001/1K chars — effectively free at this scale.
 
-const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
-const EMBED_MODEL = process.env.EMBED_MODEL ?? 'gemma4:26b';
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY ?? '';
+const EMBED_API = 'https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent';
 
 export async function getEmbedding(text: string): Promise<number[]> {
-  const res = await fetch(`${OLLAMA_URL}/api/embed`, {
+  const res = await fetch(`${EMBED_API}?key=${GOOGLE_API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text.slice(0, 2000) }),
+    body: JSON.stringify({ content: { parts: [{ text: text.slice(0, 2000) }] } }),
   });
-  if (!res.ok) throw new Error(`Ollama embed failed: ${res.status} ${await res.text()}`);
-  const data = await res.json() as { embeddings: number[][] };
-  return data.embeddings[0];
+  if (!res.ok) throw new Error(`Google embed failed: ${res.status} ${await res.text()}`);
+  const data = await res.json() as { embedding: { values: number[] } };
+  return data.embedding.values;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

@@ -1,5 +1,5 @@
 import { chromium, type Page, type Browser } from 'playwright';
-import { ChatOllama } from '@langchain/ollama';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { recordSelectorResult } from './observability.js';
@@ -432,7 +432,7 @@ Example: [{"title": "Senior Engineer", "url": "https://...", "location": "Remote
     ['human', 'Source page: {source_url}\n\nLinks:\n\n{links}'],
   ]);
 
-  const llm = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<Job[]>();
   const chain = prompt.pipe(llm).pipe(parser);
 
@@ -535,7 +535,7 @@ async function agentStep(
     .map((l, i) => `${i + 1}. "${l.text}" → ${l.url}`)
     .join('\n');
 
-  const llm    = new ChatOllama({ model: 'gemma4:26b', temperature: 0, think: false });
+  const llm    = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<AgentAction>();
   const chain  = AGENT_PROMPT.pipe(llm).pipe(parser);
 

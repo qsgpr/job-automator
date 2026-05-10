@@ -102,11 +102,15 @@ export interface User {
 // ── Apply ─────────────────────────────────────────────────────────────────────
 
 export interface ApplyEvent {
-  type:     'navigating' | 'form_found' | 'filling' | 'field_filled' | 'upload_skipped' | 'paused' | 'error' | 'debug';
+  type:     'navigating' | 'form_found' | 'filling' | 'field_filled' | 'upload_skipped' | 'paused' | 'error' | 'debug' | 'captcha_detected' | 'cover_letter_injected' | 'submitted' | 'retry';
   message?: string;
   field?:   string;
   filled?:  number;
   total?:   number;
+  captcha_type?: string;
+  screenshot_path?: string;
+  screenshot_url?: string;
+  form_url?: string;
 }
 
 export type AtsType = 'agent' | 'greenhouse' | 'lever' | 'ashby' | 'workable' | '';
@@ -161,4 +165,60 @@ export interface AutofillOptions {
   mode?: FillMode;
   typingDelay?: number;
   fieldPause?: number;
+}
+
+// ── Tailored Resume ───────────────────────────────────────────────────────────
+
+export interface TailorRequest {
+  job_url: string;
+  job_description?: string;  // Optional: if not provided, will be scraped
+}
+
+export interface TailorResponse {
+  tailored_resume_id: number;
+  tailored_resume_text: string;
+  job_title: string;
+  bullets_included: number | null;
+  match_score: number | null;
+  requirements: string[];
+  created_at: string;
+}
+
+// ── Company Research & Cover Letters ──────────────────────────────────────
+
+export interface NewsItem {
+  headline: string;
+  date: string;
+  url: string;
+  source: string;
+}
+
+export interface CompanyProfile {
+  id: number;
+  company_name: string;
+  website: string | null;
+  description: string | null;
+  tech_stack: string[];
+  culture_signals: string[];
+  recent_news: NewsItem[];
+  interview_talking_points: string[];
+  founded_year: number | null;
+  employee_count: string | null;
+  funding_status: string | null;
+  created_at: string;
+  updated_at: string;
+  cache_expires_at: string;
+  data_sources: Record<string, boolean>;
+}
+
+export interface CoverLetter {
+  id: number;
+  user_id: number;
+  job_url: string;
+  company_profile_id?: number;
+  company_name: string;
+  job_title: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
 }
