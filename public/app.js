@@ -291,18 +291,26 @@ async function onSessionReady(session) {
   // Register with backend — this sets activeUserId to the correct user
   const regData = await registerWithBackend(session);
 
-  // Show logged-in user in sidebar
-  const name  = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
   const email = session.user.email ?? '';
-  updateSidebarUser(name, email);
+
+  // Use Supabase display name as an immediate placeholder
+  const supabaseName = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
+  updateSidebarUser(supabaseName, email);
+  _setDashGreeting(supabaseName);
 
   showAppScreen();
-
-  // Persist activeUserId to localStorage so it survives page reloads
   if (activeUserId) localStorage.setItem('activeUserId', String(activeUserId));
 
-  // Start on dashboard — set greeting with user name
-  _setDashGreeting(name);
+  // Immediately overwrite placeholder with real DB name (non-blocking)
+  if (activeUserId) {
+    api.get(`/api/users/${activeUserId}`).then(u => {
+      if (u?.name && !u.error) {
+        window._activeUserDbProfile = u;
+        updateSidebarUser(u.name, u.email || email);
+        _setDashGreeting(u.name);
+      }
+    }).catch(() => {});
+  }
 
   // Load dashboard data
   loadDashboard();
@@ -315,11 +323,10 @@ async function onSessionReady(session) {
       const resumeText = userData?.resume_text || '';
       const needsOnboarding = !resumeText || resumeText.trim().length < 50;
       if (needsOnboarding) {
-        // Small delay so the dashboard renders first
-        setTimeout(() => showRegistrationOnboarding(name, email), 400);
+        const displayName = window._activeUserDbProfile?.name || supabaseName;
+        setTimeout(() => showRegistrationOnboarding(displayName, email), 400);
       }
     } catch (e) {
-      // Non-fatal — skip onboarding check on error
       console.warn('Onboarding check failed:', e);
     }
   }
@@ -2938,7 +2945,9 @@ async function refreshFeedTab() {
     if (!user?.error) {
       userInfo.textContent = `Scanning as: ${user.name}`;
       window._activeUserDbProfile = user;
-      _setDashGreeting(user.name); // use real DB name, not Supabase display name
+      // Update sidebar + greeting with real DB name (replaces Supabase email username)
+      updateSidebarUser(user.name, user.email);
+      _setDashGreeting(user.name);
     }
 
     // Pre-load cached results so the user sees them immediately
@@ -4106,10 +4115,19 @@ function initProfileTab() {
 function openApplyModal() {
   applyDebugExpanded = false;
   document.getElementById('apply-modal').classList.remove('hidden');
+  document.getElementById('apply-modal-title').textContent = 'Application Assistant';
   document.getElementById('apply-progress-list').innerHTML = '';
   document.getElementById('apply-paused-msg').classList.add('hidden');
   document.getElementById('apply-error-msg').classList.add('hidden');
   document.getElementById('apply-captcha-panel')?.classList.add('hidden');
+  document.getElementById('apply-fill-guide')?.classList.add('hidden');
+  document.getElementById('apply-fill-guide').innerHTML = '';
+  document.getElementById('apply-captcha-subcopy').textContent =
+    'This opens the real form in a fresh tab. Use the prepared answers below, solve the captcha, and submit manually.';
+  document.getElementById('apply-form-link').textContent = '🌐 Open Form in New Tab';
+  document.getElementById('apply-screenshot-wrap')?.classList.add('hidden');
+  const existingActions = document.getElementById('apply-browser-actions');
+  if (existingActions) existingActions.remove();
   document.getElementById('apply-field-count').textContent = '';
 }
 
@@ -4131,75 +4149,179 @@ function buildFillBookmarklet(filledValues) {
   const entries = Object.entries(filledValues)
     .filter(([, v]) => v && String(v).trim());
 
-  return `(function(){
+  return `(async function(){
 var vals=${JSON.stringify(Object.fromEntries(entries))};
 var filled=0;
+var skipped=[];
+
+function norm(v){
+  return String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* React-aware setter — works on Greenhouse, Lever, Workable React forms */
 function reactSet(el,val){
-  var proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+  var tag=(el.tagName||'').toUpperCase();
+  if(el.isContentEditable){
+    el.focus();
+    el.textContent=val;
+    el.dispatchEvent(new InputEvent('input',{bubbles:true,data:val,inputType:'insertText'}));
+    el.dispatchEvent(new Event('change',{bubbles:true}));
+    return;
+  }
+  var proto=tag==='TEXTAREA'
+    ? window.HTMLTextAreaElement.prototype
+    : tag==='SELECT'
+      ? window.HTMLSelectElement.prototype
+      : window.HTMLInputElement.prototype;
   var setter=Object.getOwnPropertyDescriptor(proto,'value');
   if(setter&&setter.set)setter.set.call(el,val);
   else el.value=val;
+  el.focus();
   el.dispatchEvent(new Event('input',{bubbles:true}));
   el.dispatchEvent(new Event('change',{bubbles:true}));
   el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true}));
+  el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  el.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',bubbles:true}));
 }
 
-function tryFill(el,val){
-  if(!el||!val)return false;
-  var tag=el.tagName.toLowerCase();
-  if(tag==='select'){
-    var lv=val.toLowerCase();
-    var opt=Array.from(el.options).find(o=>o.text.toLowerCase()===lv||o.value.toLowerCase()===lv||lv.includes(o.text.toLowerCase()));
-    if(!opt)opt=Array.from(el.options).find(o=>o.text.toLowerCase().includes(lv));
-    if(opt){el.value=opt.value;el.dispatchEvent(new Event('change',{bubbles:true}));return true;}
-    return false;
-  }
-  if(el.type==='checkbox'||el.type==='radio'){
-    var chk=/^(yes|true|1)$/i.test(val);
-    if(el.type==='radio'){
-      var radios=document.querySelectorAll('input[type=radio][name="'+el.name+'"]');
-      var match=Array.from(radios).find(r=>{var l=document.querySelector('label[for="'+r.id+'"]');return l&&l.textContent.trim().toLowerCase()===val.toLowerCase();});
-      if(match){match.checked=true;match.dispatchEvent(new Event('change',{bubbles:true}));return true;}
-    }
-    el.checked=chk;el.dispatchEvent(new Event('change',{bubbles:true}));return true;
-  }
-  reactSet(el,val);return true;
+function visible(el){
+  if(!el) return false;
+  var s=window.getComputedStyle(el);
+  return s && s.display!=='none' && s.visibility!=='hidden' && el.getClientRects().length>0;
 }
 
-function findByLabel(text){
-  var t=text.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-  /* 1. aria-label */
-  var el=document.querySelector('[aria-label]');
-  var all=Array.from(document.querySelectorAll('[aria-label]')).find(e=>e.getAttribute('aria-label').toLowerCase().includes(t));
-  if(all&&all.matches('input,select,textarea'))return all;
-  /* 2. placeholder */
-  all=Array.from(document.querySelectorAll('[placeholder]')).find(e=>e.getAttribute('placeholder').toLowerCase().includes(t));
-  if(all)return all;
-  /* 3. label element */
-  var labels=Array.from(document.querySelectorAll('label,legend'));
-  var lbl=labels.find(l=>l.textContent.replace(/[^a-z0-9 ]/gi,'').toLowerCase().includes(t));
-  if(lbl){
-    if(lbl.htmlFor)return document.getElementById(lbl.htmlFor);
-    var inp=lbl.querySelector('input,select,textarea');if(inp)return inp;
-    var sib=lbl.nextElementSibling;
-    while(sib){inp=sib.querySelector('input,select,textarea');if(inp)return inp;sib=sib.nextElementSibling;}
-  }
-  /* 4. Any visible text near an input */
-  var inputs=Array.from(document.querySelectorAll('input:not([type=hidden]),select,textarea'));
-  return inputs.find(i=>{
-    var wrap=i.closest('div,li,fieldset');
-    return wrap&&wrap.textContent.replace(/[^a-z0-9 ]/gi,'').toLowerCase().includes(t);
+function textNear(el){
+  var wrap=el.closest('label,div,li,fieldset,[class*="field"],[class*="question"],[class*="input"]');
+  return norm((wrap&&wrap.textContent)||'');
+}
+
+function scoreField(el,target){
+  if(!el) return 0;
+  var hay=[
+    el.getAttribute&&el.getAttribute('aria-label'),
+    el.getAttribute&&el.getAttribute('placeholder'),
+    el.getAttribute&&el.getAttribute('name'),
+    el.getAttribute&&el.getAttribute('id'),
+    el.getAttribute&&el.getAttribute('data-testid'),
+    textNear(el)
+  ].map(norm).filter(Boolean);
+  var best=0;
+  hay.forEach(function(v){
+    if(v===target) best=Math.max(best,120);
+    else if(v.includes(target)) best=Math.max(best,90);
+    else if(target.includes(v) && v.length>2) best=Math.max(best,70);
+  });
+  return best;
+}
+
+function findGroupByLegend(text){
+  var target=norm(text);
+  var groups=Array.from(document.querySelectorAll('fieldset,[role="group"],[role="radiogroup"]'));
+  return groups.find(function(g){
+    var label=g.querySelector('legend,label,[role="label"],span,p,h3,h4');
+    return label && norm(label.textContent).includes(target);
   })||null;
 }
 
-Object.entries(vals).forEach(function(e){
+async function pickCustomOption(root,val){
+  if(!root) return false;
+  var target=norm(val);
+  root.click();
+  root.focus && root.focus();
+  await sleep(200);
+  var optionSelectors='[role="option"], [role="listbox"] [aria-selected], li, div[class*="option"]';
+  var options=Array.from(document.querySelectorAll(optionSelectors)).filter(visible);
+  var best=options.find(function(opt){ return norm(opt.textContent)===target; }) ||
+           options.find(function(opt){ return norm(opt.textContent).includes(target) || target.includes(norm(opt.textContent)); });
+  if(best){
+    best.click();
+    await sleep(120);
+    return true;
+  }
+  return false;
+}
+
+async function tryFill(el,val,label){
+  if(!el||!val)return false;
+  var tag=el.tagName.toLowerCase();
+  var type=(el.type||'').toLowerCase();
+  if(type==='file'){
+    skipped.push(label+': resume/file upload must be attached manually');
+    return false;
+  }
+  if(tag==='select'){
+    var lv=norm(val);
+    var opts=Array.from(el.options);
+    var opt=opts.find(o=>norm(o.text)===lv||norm(o.value)===lv)
+      || opts.find(o=>norm(o.text).includes(lv)||lv.includes(norm(o.text)));
+    if(opt){el.value=opt.value;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;}
+    return false;
+  }
+  if(type==='checkbox'||type==='radio'){
+    var chk=/^(yes|true|1)$/i.test(val);
+    if(type==='radio'){
+      var group = el.name ? document.querySelectorAll('input[type=radio][name="'+CSS.escape(el.name)+'"]') : (findGroupByLegend(label)||document).querySelectorAll('input[type=radio]');
+      var match=Array.from(group).find(function(r){
+        var l=r.id ? document.querySelector('label[for="'+CSS.escape(r.id)+'"]') : null;
+        var text=norm((l&&l.textContent)||r.value||r.getAttribute('aria-label')||'');
+        return text===norm(val) || text.includes(norm(val)) || norm(val).includes(text);
+      });
+      if(match){match.checked=true;match.dispatchEvent(new Event('change',{bubbles:true}));return true;}
+      skipped.push(label+': no matching radio option for "'+val+'"');
+      return false;
+    }
+    el.checked=chk;el.dispatchEvent(new Event('change',{bubbles:true}));return true;
+  }
+
+  if(el.matches('[role="combobox"]') || el.getAttribute('aria-haspopup')==='listbox'){
+    if(await pickCustomOption(el,val)) return true;
+  }
+
+  reactSet(el,val);
+  await sleep(120);
+
+  if((el.matches('input') || el.matches('textarea')) && (el.getAttribute('role')==='combobox' || el.getAttribute('aria-autocomplete'))){
+    var comboOk = await pickCustomOption(el,val);
+    if(comboOk) return true;
+  }
+
+  if(el.isContentEditable || tag==='textarea' || tag==='input') return true;
+  return false;
+}
+
+function findByLabel(text){
+  var t=norm(text);
+  var candidates=Array.from(document.querySelectorAll('input:not([type=hidden]),select,textarea,[role="combobox"],[contenteditable="true"]')).filter(visible);
+  var scored=candidates
+    .map(function(el){ return {el:el, score:scoreField(el,t)}; })
+    .filter(function(x){ return x.score > 0; })
+    .sort(function(a,b){ return b.score-a.score; });
+  if(scored.length) return scored[0].el;
+
+  var labels=Array.from(document.querySelectorAll('label,legend'));
+  var lbl=labels.find(l=>norm(l.textContent).includes(t));
+  if(lbl){
+    if(lbl.htmlFor)return document.getElementById(lbl.htmlFor);
+    var inp=lbl.querySelector('input,select,textarea,[role="combobox"],[contenteditable="true"]');if(inp)return inp;
+    var sib=lbl.nextElementSibling;
+    while(sib){inp=sib.querySelector('input,select,textarea,[role="combobox"],[contenteditable="true"]');if(inp)return inp;sib=sib.nextElementSibling;}
+  }
+  return null;
+}
+
+for (const e of Object.entries(vals)) {
   var el=findByLabel(e[0]);
-  if(el&&tryFill(el,e[1]))filled++;
-});
+  if(el && await tryFill(el,e[1],e[0])) filled++;
+  else if(!el) skipped.push(e[0]+': field not found on page');
+}
 var msg='NotchUp Auto-Fill: '+filled+'/'+Object.keys(vals).length+' fields filled.';
-msg+=filled>0?' Solve the captcha and submit!':' Could not find fields — try the console script.';
+if(skipped.length){
+  msg+='\\n\\nNeeds manual review:\\n- '+skipped.slice(0,6).join('\\n- ');
+  if(skipped.length>6) msg+='\\n- +' + (skipped.length-6) + ' more';
+}
+msg+=filled>0?'\\n\\nSolve the captcha, attach resume if needed, and submit!':' Could not find fields — try the console script.';
 alert(msg);
 })();`;
 }
@@ -4213,11 +4335,48 @@ function appendApplyDebug(text) {
   list.scrollTop = list.scrollHeight;
 }
 
+function renderApplyFillGuide(filledValues) {
+  const guide = document.getElementById('apply-fill-guide');
+  if (!guide) return;
+
+  const entries = Object.entries(filledValues || {}).filter(([, value]) => value && String(value).trim());
+  if (!entries.length) {
+    guide.classList.add('hidden');
+    guide.innerHTML = '';
+    return;
+  }
+
+  const rows = entries.map(([label, value], idx) => `
+    <div style="display:grid;grid-template-columns:minmax(0,180px) minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 0;border-top:${idx === 0 ? '0' : '1px solid rgba(148,163,184,0.12)'}">
+      <div style="font-size:11px;font-weight:600;color:var(--text-dim);line-height:1.4">${esc(label)}</div>
+      <div style="font-size:12px;color:var(--text);line-height:1.5;word-break:break-word">${esc(String(value))}</div>
+      <button class="btn btn-ghost btn-sm apply-copy-value-btn" type="button" data-value="${encodeURIComponent(String(value))}" style="padding:6px 10px">Copy</button>
+    </div>
+  `).join('');
+
+  guide.innerHTML = `
+    <div style="font-size:11px;font-weight:700;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">Prepared answers</div>
+    <div style="border:1px solid var(--border);border-radius:10px;background:rgba(15,23,42,0.38);padding:0 12px;max-height:min(34vh,320px);overflow-y:auto;overscroll-behavior:contain">
+      ${rows}
+    </div>
+  `;
+  guide.classList.remove('hidden');
+
+  guide.querySelectorAll('.apply-copy-value-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(decodeURIComponent(btn.dataset.value || ''));
+      const original = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = original; }, 1000);
+    });
+  });
+}
+
 async function startAutoApply(jobUrl) {
   if (!activeUserId) { toast('Select a profile first', 'error'); return; }
   applyDebugExpanded = false;
   openApplyModal();
-  appendApplyStep('🔄', 'Starting auto-apply…');
+  appendApplyStep('🔄', 'Starting application assistant…');
 
   await api.stream('/api/apply', { userId: activeUserId, jobUrl }, evt => {
     if (evt.type === 'navigating') {
@@ -4240,19 +4399,25 @@ async function startAutoApply(jobUrl) {
       const link = document.getElementById('apply-form-link');
       const shot = document.getElementById('apply-screenshot');
       const shotWrap = document.getElementById('apply-screenshot-wrap');
+      const subcopy = document.getElementById('apply-captcha-subcopy');
       panel.classList.remove('hidden');
       setTimeout(() => panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
-      if (evt.form_url) { link.href = evt.form_url; link.textContent = '🌐 Open Form in Browser'; }
+      if (evt.form_url) { link.href = evt.form_url; link.textContent = '🌐 Open Real Form'; }
+      if (subcopy) {
+        subcopy.textContent = evt.message?.includes('guided apply')
+          ? 'We switched to a guided handoff before filling the hidden browser. Open the real form, autofill it, solve the captcha, and submit.'
+          : 'The form is blocked by human verification. Open the real form, solve the captcha, and submit manually.';
+      }
       if (evt.screenshot_url) {
         shot.src = evt.screenshot_url + '?t=' + Date.now();
         shotWrap.classList.remove('hidden');
       }
-      appendApplyStep('🔒', `Captcha detected — ${evt.form_url ? 'open form to solve' : 'solve manually'}`);
+      appendApplyStep('🔒', evt.message || `Captcha detected — ${evt.form_url ? 'open form to solve' : 'solve manually'}`);
     } else if (evt.type === 'paused') {
       const msg = document.getElementById('apply-paused-msg');
       msg.textContent = evt.message || 'Paused — review and submit in the browser';
       msg.classList.remove('hidden');
-      appendApplyStep('⏸', 'Paused for your review');
+      appendApplyStep('⏸', 'Handed off for manual review');
 
       // Show copy-paste guide if we have filled values
       if (evt.filled_values && Object.keys(evt.filled_values).length) {
@@ -4261,6 +4426,7 @@ async function startAutoApply(jobUrl) {
         panel.classList.remove('hidden');
         if (evt.form_url) link.href = evt.form_url;
         setTimeout(() => panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+        renderApplyFillGuide(evt.filled_values);
 
         // Build bookmarklet JS that fills the form in user's browser
         const fillScript = buildFillBookmarklet(evt.filled_values);
@@ -4273,7 +4439,7 @@ async function startAutoApply(jobUrl) {
         actions.id = 'apply-browser-actions';
         actions.style.cssText = 'padding:0 14px 12px;display:flex;flex-direction:column;gap:8px';
         actions.innerHTML = `
-          <div style="font-size:11px;font-weight:600;color:var(--text-dim);margin-bottom:2px">Fill in your browser:</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);margin-bottom:2px">Autofill the real form:</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <a href="${bookmarkletHref}" class="btn btn-primary btn-sm" style="text-decoration:none;flex:1;justify-content:center"
                title="Drag this to your bookmarks bar, then click it on the form page">
@@ -4287,16 +4453,12 @@ async function startAutoApply(jobUrl) {
           </div>
           <div style="font-size:11px;color:var(--text-muted);background:var(--bg);padding:8px 10px;border-radius:6px;line-height:1.6">
             <strong style="color:var(--text)">How to use:</strong><br>
-            1. Click <strong>🌐 Open Form</strong> to open the form in a new tab<br>
-            2. Drag the 🔖 bookmarklet to your bookmarks bar, then click it<br>
+            1. Click <strong>🌐 Open Real Form</strong> to open the application page in a new tab<br>
+            2. Drag the 🔖 bookmarklet to your bookmarks bar, then click it on that page<br>
             &nbsp;&nbsp;&nbsp;<em>— or —</em> press <kbd>F12</kbd> → Console → paste the script<br>
-            3. Form fills automatically · Solve captcha · Submit ✓
+            3. Review dropdowns and custom fields, solve captcha, attach resume manually if needed, then submit ✓
           </div>`;
         panel.appendChild(actions);
-
-        // Also keep the values table as reference
-        const existingGuide = document.getElementById('apply-fill-guide');
-        if (existingGuide) existingGuide.remove();
       }
     } else if (evt.type === 'error') {
       const err = document.getElementById('apply-error-msg');
@@ -4504,12 +4666,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check for an existing Supabase session (page reload)
   const { data: { session } } = await supabaseClient.auth.getSession();
   if (session) {
-    const name  = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
     const email = session.user.email ?? '';
-    updateSidebarUser(name, email);
-    _setDashGreeting(name);
+    const supabaseName = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
+    updateSidebarUser(supabaseName, email);
+    _setDashGreeting(supabaseName);
     await registerWithBackend(session); // sets activeUserId
     if (activeUserId) localStorage.setItem('activeUserId', String(activeUserId));
+    // Overwrite placeholder with real DB name immediately
+    if (activeUserId) {
+      api.get(`/api/users/${activeUserId}`).then(u => {
+        if (u?.name && !u.error) {
+          window._activeUserDbProfile = u;
+          updateSidebarUser(u.name, u.email || email);
+          _setDashGreeting(u.name);
+        }
+      }).catch(() => {});
+    }
     showAppScreen();
     loadDashboard();
     refreshFeedTab();
