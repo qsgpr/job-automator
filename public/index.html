@@ -153,6 +153,29 @@
         </div>
       </div>
 
+      <section class="mobile-app-band" aria-label="Upcoming App Store release">
+        <div class="mobile-app-band-copy">
+          <div class="mobile-app-band-badge">Coming Soon</div>
+          <h2 class="mobile-app-band-title">NotchUp for iPhone</h2>
+          <p class="mobile-app-band-sub">
+            The App Store version is on the way. This preview shows the mobile experience we’re preparing for launch.
+          </p>
+          <div class="mobile-app-band-actions">
+            <button class="app-store-soon-btn" type="button" disabled aria-disabled="true">
+              App Store Release Soon
+            </button>
+            <span class="mobile-app-band-note">No public build yet.</span>
+          </div>
+        </div>
+        <div class="mobile-app-band-media">
+          <img
+            src="/screenshots/Section.png"
+            alt="Showcase of the upcoming NotchUp iPhone app"
+            class="mobile-app-band-image"
+          />
+        </div>
+      </section>
+
       <!-- Stat cards -->
       <div class="dash-stats" id="dash-stats">
         <div class="dash-stat-card">
@@ -303,7 +326,7 @@
     <section class="tab-panel" id="tab-cover">
       <div class="panel-header">
         <h1 class="panel-title">Cover Letter</h1>
-        <p class="panel-sub">AI writes a tailored 3–4 paragraph letter from your resume and the role.</p>
+        <p class="panel-sub">Select a scanned job for a fully tailored letter using AI job analysis + company research. Or enter any company and role manually.</p>
       </div>
 
       <!-- From Job Feed picker -->
@@ -674,35 +697,49 @@
 
     <!-- AI Assistant tab -->
     <section class="tab-panel" id="tab-assistant">
-      <div class="panel-header">
-        <h1 class="panel-title">AI Assistant</h1>
-        <p class="panel-sub">Career coach powered by Gemini — ask about your resume, job matches, interview prep, or salary strategy.</p>
-      </div>
-
-      <!-- Token quota bar -->
-      <div class="chat-quota-bar" id="chat-quota-bar">
-        <span class="chat-quota-icon">⚡</span>
-        <span class="chat-quota-label" id="chat-quota-label">Loading…</span>
-        <div class="chat-quota-track">
-          <div class="chat-quota-fill" id="chat-quota-fill" style="width:100%"></div>
+      <div class="assistant-layout">
+        <div class="assistant-topbar">
+          <div class="assistant-heading">
+            <h1 class="panel-title">AI Assistant</h1>
+            <p class="panel-sub">Career coach powered by Gemini — ask about your resume, job matches, interview prep, or salary strategy.</p>
+          </div>
+          <div class="assistant-topbar-note">Uses your profile, resume, and recent history to keep answers grounded.</div>
         </div>
-        <span class="chat-quota-count" id="chat-quota-count"></span>
-      </div>
 
-      <!-- Messages window -->
-      <div class="chat-window" id="chat-messages"></div>
+        <div class="assistant-shell">
+          <div class="assistant-shell-header">
+            <div class="assistant-shell-title-row">
+              <div>
+                <div class="assistant-shell-eyebrow">Conversation</div>
+                <div class="assistant-shell-title">Plan your next move</div>
+              </div>
+              <div class="assistant-shell-hint">Press Enter to send, Shift+Enter for a new line.</div>
+            </div>
 
-      <!-- Input area -->
-      <div class="chat-input-wrap" id="chat-input-wrap">
-        <div class="chat-input-row">
-          <textarea id="chat-input" class="chat-textarea" placeholder="Ask anything about your job search…" rows="1"></textarea>
-          <button class="chat-send-btn" id="chat-send-btn" title="Send (Enter)">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-          </button>
-        </div>
-        <div class="chat-meta-row">
-          <button class="chat-clear-link" id="chat-clear-btn">Clear history</button>
-          <span class="chat-powered">Gemini 2.5 Flash</span>
+            <div class="chat-quota-bar" id="chat-quota-bar">
+              <span class="chat-quota-icon">⚡</span>
+              <span class="chat-quota-label" id="chat-quota-label">Loading…</span>
+              <div class="chat-quota-track">
+                <div class="chat-quota-fill" id="chat-quota-fill" style="width:100%"></div>
+              </div>
+              <span class="chat-quota-count" id="chat-quota-count"></span>
+            </div>
+          </div>
+
+          <div class="chat-window" id="chat-messages"></div>
+
+          <div class="chat-input-wrap" id="chat-input-wrap">
+            <div class="chat-input-row">
+              <textarea id="chat-input" class="chat-textarea" placeholder="Ask anything about your job search…" rows="1"></textarea>
+              <button class="chat-send-btn" id="chat-send-btn" title="Send (Enter)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </button>
+            </div>
+            <div class="chat-meta-row">
+              <button class="chat-clear-link" id="chat-clear-btn">Clear history</button>
+              <span class="chat-powered">Gemini 2.5 Flash</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>

@@ -331,29 +331,30 @@ app.post('/api/letters/generate', async (req, res) => {
       return;
     }
 
-    // Check cache first
-    emit({ type: 'progress', message: 'Checking cache...' });
+    // Check cover letter cache first
+    emit({ type: 'progress', message: 'Checking cache…' });
     const cached = getCachedCoverLetter(userId, jobUrl);
     if (cached) {
-      emit({ type: 'progress', message: 'Found cached cover letter', done: true });
+      emit({ type: 'progress', message: 'Loaded from cache', done: true });
       emit({ type: 'result', data: cached });
       res.end();
       return;
     }
 
-    // Scrape and analyze the job
-    emit({ type: 'progress', message: 'Scraping job page...' });
-    const jobDescription = await scrapeJob(jobUrl);
-    emit({ type: 'progress', message: 'Analyzing job requirements...' });
-    const analysis = await analyze(jobDescription, user.resume_text, jobUrl);
-
-    // Get company profile if provided or try to infer from job
-    let companyProfile = null;
-    if (companyProfileId) {
-      emit({ type: 'progress', message: 'Loading company profile...' });
-      // Note: We need to fetch by name, so we'll infer from analysis
-      // In a full implementation, company_profiles table would store id and name
+    // Use existing feed_jobs analysis if available — avoids re-scraping
+    let analysis: import('./types.js').Analysis | null = null;
+    const feedCached = getCachedFeedJob(userId, jobUrl);
+    if (feedCached?.analysis) {
+      emit({ type: 'progress', message: 'Using cached job analysis', done: true });
+      analysis = feedCached.analysis;
+    } else {
+      emit({ type: 'progress', message: 'Scraping job page…' });
+      const jobDescription = await scrapeJob(jobUrl);
+      emit({ type: 'progress', message: 'Analysing job requirements…' });
+      analysis = await analyze(jobDescription, user.resume_text, jobUrl);
     }
+
+    const companyProfile = null;
 
     // Generate cover letter
     emit({ type: 'progress', message: 'Generating cover letter...' });

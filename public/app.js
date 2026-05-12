@@ -1106,6 +1106,121 @@ function buildJobCard(job) {
 
 // ── Cover Letter tab ──────────────────────────────────────────────────────────
 
+function _renderCoverLetterResult(company, role, letterText, resultEl) {
+  const charCount = letterText.trim().length;
+  const card = document.createElement('div');
+  card.className = 'cover-preview-card';
+  card.innerHTML = `
+    <div class="cover-preview-header">
+      <div class="cover-preview-meta">
+        <div class="cover-preview-role">${esc(role)}</div>
+        <div class="cover-preview-company">${esc(company)}</div>
+      </div>
+      <div class="cover-preview-actions">
+        <span class="cover-char-count">${charCount.toLocaleString()} chars</span>
+        <button class="btn btn-secondary btn-sm" id="cover-copy-btn-v2">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy
+        </button>
+        <button class="btn btn-secondary btn-sm" id="cover-dl-btn-v2">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download .txt
+        </button>
+      </div>
+    </div>
+    <div class="cover-letter-body" id="cover-letter-body-text"></div>`;
+  card.querySelector('#cover-letter-body-text').textContent = letterText;
+  resultEl.innerHTML = '';
+  resultEl.appendChild(card);
+  resultEl.classList.remove('hidden');
+  card.querySelector('#cover-copy-btn-v2').addEventListener('click', () => {
+    navigator.clipboard.writeText(letterText).then(() => toast('Copied to clipboard'));
+  });
+  card.querySelector('#cover-dl-btn-v2').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([letterText], { type: 'text/plain' }));
+    a.download = `cover_letter_${company.toLowerCase().replace(/\s+/g, '_')}.txt`;
+    a.click();
+  });
+}
+
+async function _generateFullCoverLetter(jobUrl, company, role, resultEl, btn) {
+  resultEl.innerHTML = `
+    <div class="card" id="cover-progress-card">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">Writing AI cover letter…</div>
+      <div id="cover-progress-log" class="progress-log" style="font-size:12px"></div>
+    </div>`;
+  resultEl.classList.remove('hidden');
+
+  const logEl = document.getElementById('cover-progress-log');
+  const step = (msg, done = false) => {
+    if (!logEl) return;
+    const line = document.createElement('div');
+    line.className = 'progress-line';
+    line.innerHTML = `<span style="color:${done ? 'var(--success)' : 'var(--text-dim)'}">${done ? '✓' : '…'}</span> ${esc(msg)}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  let letterText = '';
+  try {
+    const response = await authFetch('/api/letters/generate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ userId: activeUserId, jobUrl }),
+    });
+    if (!response.ok) throw new Error(`Server error ${response.status}`);
+
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'progress') step(msg.message, !!msg.done);
+          else if (msg.type === 'result') letterText = msg.data?.content ?? '';
+          else if (msg.type === 'error')  throw new Error(msg.message);
+        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+      }
+    }
+
+    if (!letterText) throw new Error('No letter received — try again');
+    _renderCoverLetterResult(company, role, letterText, resultEl);
+  } catch (e) {
+    resultEl.innerHTML = `<div class="card" style="color:var(--danger);padding:16px">⚠ ${esc(e.message)}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate Cover Letter';
+}
+
+async function _generateSimpleCoverLetter(company, role, skills, resultEl, btn) {
+  resultEl.innerHTML = `
+    <div class="card" style="min-height:140px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+      <span class="spinner-sm"></span>
+      <span style="font-size:12px;color:var(--text-muted)">Writing cover letter… 20–40 s</span>
+    </div>`;
+  resultEl.classList.remove('hidden');
+
+  try {
+    const data = await api.post('/api/cover-letter', { userId: activeUserId, company, role, skills });
+    if (data.error) throw new Error(data.error);
+    _renderCoverLetterResult(company, role, data.letter, resultEl);
+  } catch (e) {
+    toast(e.message, 'error');
+    resultEl.classList.add('hidden');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate Cover Letter';
+}
+
 function initCoverTab() {
   const btn      = document.getElementById('cover-btn');
   const company  = document.getElementById('cover-company');
@@ -1113,60 +1228,23 @@ function initCoverTab() {
   const skills   = document.getElementById('cover-skills');
   const resultEl = document.getElementById('cover-result');
 
+  // Job picker is initialised here too — no separate patch needed
+  initCoverJobPicker();
+
   btn.addEventListener('click', async () => {
     if (!company.value.trim() || !role.value.trim()) {
       toast('Enter company and role first', 'error');
       return;
     }
-
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Writing…';
-    resultEl.innerHTML = `
-      <div class="card" style="min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
-        <span class="spinner-sm"></span>
-        <span style="font-size:12px;color:var(--text-muted)">AI is writing your cover letter… 20–40 seconds</span>
-      </div>`;
-    resultEl.classList.remove('hidden');
 
-    const data = await api.post('/api/cover-letter', {
-      company: company.value.trim(),
-      role:    role.value.trim(),
-      skills:  skills.value.trim(),
-    });
-
-    btn.disabled = false;
-    btn.textContent = 'Generate Cover Letter';
-
-    if (data.error) {
-      toast(data.error, 'error');
-      resultEl.classList.add('hidden');
-      return;
+    const jobUrl = window._coverSelectedJobUrl || null;
+    if (jobUrl && activeUserId) {
+      await _generateFullCoverLetter(jobUrl, company.value.trim(), role.value.trim(), resultEl, btn);
+    } else {
+      await _generateSimpleCoverLetter(company.value.trim(), role.value.trim(), skills.value.trim(), resultEl, btn);
     }
-
-    resultEl.innerHTML = `
-      <div class="card result-card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-          <div>
-            <div style="font-size:14px;font-weight:600">${esc(role.value)}</div>
-            <div style="font-size:12px;color:var(--text-dim);margin-top:2px">${esc(company.value)}</div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-secondary btn-sm" id="copy-cover-btn">Copy</button>
-            <button class="btn btn-secondary btn-sm" id="dl-cover-btn">Download</button>
-          </div>
-        </div>
-        <div class="cover-letter-box">${esc(data.letter)}</div>
-      </div>`;
-
-    document.getElementById('copy-cover-btn').addEventListener('click', () => {
-      navigator.clipboard.writeText(data.letter).then(() => toast('Copied to clipboard'));
-    });
-    document.getElementById('dl-cover-btn').addEventListener('click', () => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([data.letter], { type: 'text/plain' }));
-      a.download = `cover_letter_${company.value.toLowerCase().replace(/\s+/g, '_')}.txt`;
-      a.click();
-    });
   });
 }
 
@@ -4978,9 +5056,12 @@ function initCoverJobPicker() {
   // Auto-fill company + role when a job is picked
   selectEl.addEventListener('change', () => {
     const idx = parseInt(selectEl.value, 10);
-    if (isNaN(idx) || idx < 0) return;
+    if (isNaN(idx) || idx < 0) {
+      window._coverSelectedJobUrl = null;
+      return;
+    }
     const j = _coverFeedJobs[idx];
-    if (!j) return;
+    if (!j) { window._coverSelectedJobUrl = null; return; }
 
     const companyInput = document.getElementById('cover-company');
     const roleInput    = document.getElementById('cover-role');
@@ -5004,93 +5085,6 @@ function initCoverJobPicker() {
   });
 }
 
-// Patch initCoverTab to add job picker init and improved output rendering.
-// We hook in AFTER the original runs rather than modifying it.
-const _origInitCoverTab = initCoverTab;
-initCoverTab = function() {
-  // Run original (preserves all existing generate/copy/download handlers)
-  _origInitCoverTab();
-
-  // Initialize the job picker UI
-  initCoverJobPicker();
-
-  // Patch the generate button to use the new preview card render instead of plain textarea.
-  // We do this by intercepting the POST result — we wrap the btn's click listener last.
-  const btn      = document.getElementById('cover-btn');
-  const resultEl = document.getElementById('cover-result');
-  if (!btn || !resultEl) return;
-
-  btn.addEventListener('click', async () => {
-    const company = document.getElementById('cover-company')?.value.trim();
-    const role    = document.getElementById('cover-role')?.value.trim();
-    if (!company || !role) return;  // original handler already validates + toasts
-
-    // Wait a tick for the original handler to fire first (it also fires on this click)
-    // We override the result rendering by observing resultEl mutations
-    // after the API returns — but simpler: we patch by adding a MutationObserver
-    // that replaces the inner card once the original plain result appears.
-    const observer = new MutationObserver(() => {
-      const existingCard = resultEl.querySelector('.card.result-card');
-      if (!existingCard) return;
-      const letterBox = existingCard.querySelector('.cover-letter-box');
-      if (!letterBox) return;
-
-      // Extract the letter text
-      const letterText = letterBox.textContent;
-      if (!letterText || letterText.trim().length < 50) return;
-
-      observer.disconnect();
-
-      // Re-render as the new styled preview card
-      const charCount = letterText.trim().length;
-      const newCard = document.createElement('div');
-      newCard.className = 'cover-preview-card';
-      newCard.innerHTML = `
-        <div class="cover-preview-header">
-          <div class="cover-preview-meta">
-            <div class="cover-preview-role">${esc(role)}</div>
-            <div class="cover-preview-company">${esc(company)}</div>
-          </div>
-          <div class="cover-preview-actions">
-            <span class="cover-char-count" id="cover-live-char-count">${charCount.toLocaleString()} chars</span>
-            <button class="btn btn-secondary btn-sm" id="cover-copy-btn-v2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Copy
-            </button>
-            <button class="btn btn-secondary btn-sm" id="cover-dl-btn-v2">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download .txt
-            </button>
-          </div>
-        </div>
-        <div class="cover-letter-body" id="cover-letter-body-text"></div>`;
-
-      // Safely set text content (no XSS risk since we use textContent)
-      newCard.querySelector('#cover-letter-body-text').textContent = letterText;
-
-      resultEl.innerHTML = '';
-      resultEl.appendChild(newCard);
-      resultEl.classList.remove('hidden');
-
-      // Wire copy
-      document.getElementById('cover-copy-btn-v2')?.addEventListener('click', () => {
-        navigator.clipboard.writeText(letterText).then(() => toast('Copied to clipboard'));
-      });
-
-      // Wire download
-      document.getElementById('cover-dl-btn-v2')?.addEventListener('click', () => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([letterText], { type: 'text/plain' }));
-        a.download = `cover_letter_${company.toLowerCase().replace(/\s+/g, '_')}.txt`;
-        a.click();
-      });
-    });
-
-    observer.observe(resultEl, { childList: true, subtree: true });
-    // Auto-disconnect observer after 60s to avoid leaks
-    setTimeout(() => observer.disconnect(), 60000);
-  });
-};
 
 // Load cover feed jobs whenever the cover tab becomes active
 const _origSwitchTab = switchTab;
