@@ -28,6 +28,7 @@ COPY --from=builder /app/dist        ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 COPY public ./public
+COPY form.html ./
 
 # Install Playwright browsers (chromium only)
 RUN npx playwright install chromium
