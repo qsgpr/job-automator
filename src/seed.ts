@@ -364,20 +364,43 @@ export function seedDemoUser(): void {
   // Reset chat quota for demo
   try { db.prepare(`UPDATE users SET chat_token_used = 0 WHERE id = ?`).run(userId); } catch {}
 
-  // ── 2. Upsert job sites ───────────────────────────────────────────────────
-  const upsertSite = db.prepare(`
-    INSERT INTO job_sites (name, url, active, ats_type, ats_slug, added_at)
-    VALUES (?, ?, 1, ?, ?, ?)
-    ON CONFLICT(url) DO UPDATE SET name=excluded.name, ats_type=excluded.ats_type, ats_slug=excluded.ats_slug, active=1
+  const seedFlagKey = 'demo_seed_initialized_v1';
+  const existingSeedFlag = db.prepare(
+    `SELECT value FROM app_settings WHERE key = ?`
+  ).get(seedFlagKey) as { value: string } | undefined;
+  const existingSeededSiteCount = db.prepare(
+    `SELECT COUNT(*) AS count FROM job_sites WHERE user_id = ? AND url IN (${DEMO_SITES.map(() => '?').join(', ')})`
+  ).get(userId, ...DEMO_SITES.map(site => site.url)) as { count: number };
+  const existingFeedCount = db.prepare(
+    `SELECT COUNT(*) AS count FROM feed_jobs WHERE user_id = ?`
+  ).get(userId) as { count: number };
+  const existingApplicationCount = db.prepare(
+    `SELECT COUNT(*) AS count FROM applications WHERE user_id = ?`
+  ).get(userId) as { count: number };
+
+  const alreadySeeded =
+    existingSeedFlag?.value === '1'
+    || existingSeededSiteCount.count > 0
+    || existingFeedCount.count > 0
+    || existingApplicationCount.count > 0;
+
+  // ── 2. Always upsert job sites (safe to run every restart) ──────────────
+  const insertSite = db.prepare(`
+    INSERT INTO job_sites (user_id, name, url, active, ats_type, ats_slug, added_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(user_id, url) DO UPDATE SET
+      name = excluded.name,
+      ats_type = excluded.ats_type,
+      ats_slug = excluded.ats_slug
   `);
   for (const s of DEMO_SITES) {
-    upsertSite.run(s.name, s.url, s.ats_type, s.ats_slug, ts);
+    insertSite.run(userId, s.name, s.url, s.ats_type, s.ats_slug, ts);
   }
 
-  // ── 3. Seed feed jobs (replace demo user's jobs entirely) ─────────────────
+  // ── 3. Seed feed jobs for demo initialization ─────────────────────────────
   db.prepare(`DELETE FROM feed_jobs WHERE user_id = ?`).run(userId);
 
-  const getSiteId = db.prepare(`SELECT id FROM job_sites WHERE url = ?`);
+  const getSiteId = db.prepare(`SELECT id FROM job_sites WHERE url = ? AND user_id = ?`);
   const insertFeedJob = db.prepare(`
     INSERT INTO feed_jobs
       (user_id, site_id, job_url, job_title, location, department,
@@ -386,7 +409,7 @@ export function seedDemoUser(): void {
   `);
 
   for (const job of DEMO_FEED_JOBS) {
-    const siteRow = getSiteId.get(job.site) as { id: number } | undefined;
+    const siteRow = getSiteId.get(job.site, userId) as { id: number } | undefined;
     if (!siteRow) {
       console.warn(`[seed] Site not found for ${job.site}, skipping ${job.job_title}.`);
       continue;
@@ -412,6 +435,12 @@ export function seedDemoUser(): void {
       app.match_score, app.status, app.notes, app.added_at, app.added_at,
     );
   }
+
+  db.prepare(`
+    INSERT INTO app_settings (key, value)
+    VALUES (?, '1')
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(seedFlagKey);
 
   console.log(`[seed] Demo data ready — ${DEMO_FEED_JOBS.length} jobs, ${DEMO_APPLICATIONS.length} applications.`);
   console.log(`[seed] Login: ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);

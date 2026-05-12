@@ -1,11 +1,35 @@
 import { listJobs, agentListJobs, scrapeJob, scrapeLinkedIn } from './scraper.js';
 import { analyze } from './analyzer.js';
-import { getUser, getActiveSites, getCachedFeedJob, upsertFeedJob, removeStaleFeedJobs, getCachedFeedJobsForUser } from './profiles.js';
+import {
+  getUser,
+  getActiveSites,
+  getCachedFeedJob,
+  getScrapedJob,
+  upsertScrapedJob,
+  setScrapedJobContent,
+  markScrapedJobError,
+  upsertFeedJob,
+  removeStaleFeedJobs,
+  removeStaleScrapedJobs,
+  getCachedFeedJobsForUser,
+} from './profiles.js';
 import type { Job, UserPreferences, FeedFilterResult, FeedJobResult, FeedScanEvent } from './types.js';
 
 export interface AbortSignal { readonly aborted: boolean }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('__SCAN_ABORTED__');
+}
+
+async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  const slice = 100;
+  for (let remaining = ms; remaining > 0; remaining -= slice) {
+    throwIfAborted(signal);
+    await sleep(Math.min(slice, remaining));
+  }
+}
 
 // ── Filter helpers ────────────────────────────────────────────────────────────
 
@@ -121,11 +145,14 @@ export async function runFeedScan(
   userId: number,
   emit: (event: FeedScanEvent) => void,
   signal?: AbortSignal,
+  options?: { analyze?: boolean },
 ): Promise<void> {
   const user = getUser(userId);
   if (!user) throw new Error(`User ${userId} not found`);
+  throwIfAborted(signal);
+  const shouldAnalyze = options?.analyze !== false;
 
-  const sites = getActiveSites();
+  const sites = getActiveSites(userId);
   emit({ type: 'scan_start', total_sites: sites.length });
 
   let totalAnalyzed = 0;
@@ -159,6 +186,7 @@ export async function runFeedScan(
           message:   'LinkedIn scraper — loading search results and extracting descriptions…',
         });
         const linkedInResults = await scrapeLinkedIn(site.url, emit);
+        throwIfAborted(signal);
         jobs = linkedInResults.map(r => r.job);
         linkedInDescriptions = new Map(linkedInResults.map(r => [r.job.url, r.description]));
       } else if (site.ats_type === 'agent') {
@@ -171,10 +199,13 @@ export async function runFeedScan(
             message:   `[${step}] ${action.action}${action.url ? ' → ' + action.url : action.selector ? ' → ' + action.selector : ''}: ${action.reason}`,
           });
         });
+        throwIfAborted(signal);
       } else {
         jobs = await listJobs(site.url, true, atsOverride);
+        throwIfAborted(signal);
       }
     } catch (e) {
+      if ((e as Error).message === '__SCAN_ABORTED__') break;
       emit({ type: 'site_error', site_id: site.id, site_name: site.name, message: String(e) });
       continue;
     }
@@ -186,6 +217,12 @@ export async function runFeedScan(
     for (const job of jobs) {
       if (signal?.aborted) break;
       seenUrls.push(job.url);
+      upsertScrapedJob(site.id, job);
+
+      const linkedInDescription = linkedInDescriptions?.get(job.url) ?? null;
+      if (linkedInDescription) {
+        setScrapedJobContent(job.url, linkedInDescription);
+      }
 
       // ── Pre-filter (no JD text yet) ────────────────────────────────────────
       const pre = applyFilters(job, user.preferences);
@@ -218,6 +255,23 @@ export async function runFeedScan(
         continue;
       }
 
+      // Show newly discovered jobs immediately, even before scoring finishes.
+      upsertFeedJob(userId, site.id, job, {
+        analysis: null,
+        filter_result: pre.result,
+        warnings: pre.warnings,
+      });
+      emit({ type: 'job_discovered', job: {
+        job,
+        site_id: site.id,
+        site_name: site.name,
+        filter_result: pre.result,
+        warnings: pre.warnings,
+        analysis: null,
+        analyzed: false,
+      } });
+      if (!shouldAnalyze) continue;
+
       // ── New job — scrape + analyze ──────────────────────────────────────────
       emit({ type: 'job_analyzing', site_id: site.id, site_name: site.name,
         job: { job, site_id: site.id, site_name: site.name,
@@ -227,10 +281,12 @@ export async function runFeedScan(
       let finalFilter = pre;
 
       try {
-        // For LinkedIn jobs, reuse the description already extracted during the
-        // card-scraping pass.  For other sources, scrape the individual job page.
-        const jdText = linkedInDescriptions?.get(job.url)
-          ?? await scrapeJob(job.url);
+        let jdText = getScrapedJob(job.url)?.jd_text ?? linkedInDescription;
+        if (!jdText) {
+          jdText = await scrapeJob(job.url);
+          throwIfAborted(signal);
+          setScrapedJobContent(job.url, jdText);
+        }
 
         finalFilter = applyFilters(job, user.preferences, jdText);
         if (finalFilter.result === 'hard_skip') {
@@ -243,10 +299,13 @@ export async function runFeedScan(
         }
 
         analysis = await analyze(jdText, user.resume_text, job.url);
+        throwIfAborted(signal);
         totalAnalyzed++;
         // Pace requests to avoid Gemini burst rate limits (2 calls per job)
-        await sleep(1500);
+        await sleepWithAbort(1500, signal);
       } catch (e) {
+        if ((e as Error).message === '__SCAN_ABORTED__') break;
+        markScrapedJobError(job.url, (e as Error).message);
         finalFilter = { ...finalFilter, warnings: [...finalFilter.warnings, `Analysis failed: ${(e as Error).message}`] };
       }
 
@@ -270,12 +329,23 @@ export async function runFeedScan(
     }
 
     // ── Prune jobs that disappeared from this site ─────────────────────────────
+    removeStaleScrapedJobs(site.id, seenUrls);
     const removed = removeStaleFeedJobs(userId, site.id, seenUrls);
     emit({ type: 'site_done', site_id: site.id, site_name: site.name, removed });
   }
 
+  if (signal?.aborted) {
+    emit({ type: 'scan_cancelled', analyzed: totalAnalyzed, skipped: totalSkipped,
+      message: shouldAnalyze
+        ? `Scan stopped — ${totalAnalyzed} analyzed, ${totalCached} from cache, ${totalSkipped} filtered`
+        : `Discovery stopped — ${totalCached} already-scored, ${totalSkipped} filtered` });
+    return;
+  }
+
   emit({ type: 'scan_done', analyzed: totalAnalyzed, skipped: totalSkipped,
-    message: `${totalAnalyzed} newly analyzed, ${totalCached} from cache, ${totalSkipped} filtered` });
+    message: shouldAnalyze
+      ? `${totalAnalyzed} newly analyzed, ${totalCached} from cache, ${totalSkipped} filtered`
+      : `${totalCached} already scored, ${totalSkipped} filtered; discovery cache refreshed` });
 }
 
 // ── Re-analyze cached jobs without a full discovery scan ──────────────────────
@@ -288,6 +358,7 @@ export async function reanalyzeFeedJobs(
 ): Promise<void> {
   const user = getUser(userId);
   if (!user) throw new Error(`User ${userId} not found`);
+  throwIfAborted(signal);
 
   const allCached = getCachedFeedJobsForUser(userId);
   const targets = jobUrls === 'all'
@@ -307,10 +378,18 @@ export async function reanalyzeFeedJobs(
 
     let analysis = null;
     try {
-      const jdText = await scrapeJob(job.url);
+      let jdText = getScrapedJob(job.url)?.jd_text ?? null;
+      if (!jdText) {
+        jdText = await scrapeJob(job.url);
+        throwIfAborted(signal);
+        setScrapedJobContent(job.url, jdText);
+      }
       analysis = await analyze(jdText, user.resume_text, job.url);
-      await sleep(1500);
+      throwIfAborted(signal);
+      await sleepWithAbort(1500, signal);
     } catch (e) {
+      if ((e as Error).message === '__SCAN_ABORTED__') break;
+      markScrapedJobError(job.url, (e as Error).message);
       emit({ type: 'site_error', site_id, site_name: job.title,
         message: `Re-analysis failed: ${(e as Error).message}` });
       done++;
@@ -329,6 +408,12 @@ export async function reanalyzeFeedJobs(
       filter_result: 'pass', warnings: [], analysis, analyzed: true,
     };
     emit({ type: 'job_result', from_cache: false, job: result });
+  }
+
+  if (signal?.aborted) {
+    emit({ type: 'scan_cancelled', analyzed: done, skipped: 0,
+      message: `Re-analysis stopped — ${done} job${done !== 1 ? 's' : ''} updated` });
+    return;
   }
 
   emit({ type: 'scan_done', analyzed: done, skipped: 0,

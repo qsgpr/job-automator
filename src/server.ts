@@ -19,7 +19,7 @@ import { tailorResumeToJob } from './tailor.js';
 import { generateCoverLetterFromAnalysis, validateCoverLetter, saveCoverLetter, getCachedCoverLetter, getCoverLettersForUser } from './coverletter-agent.js';
 import { getCachedCompanyProfile, upsertCompanyProfile, listCompanyProfiles } from './profiles.js';
 import { authMiddleware, handleRegister } from './auth.js';
-import { seedDemoUser } from './seed.js';
+import { seedDemoUser, DEMO_EMAIL, DEMO_PASSWORD } from './seed.js';
 import { streamChatResponse, getChatHistory, clearChatHistory, getChatQuota } from './chat.js';
 
 const _require = createRequire(import.meta.url);
@@ -70,6 +70,32 @@ if (process.env.DISPLAY) {
 // ── Auth (public endpoints) ───────────────────────────────────────────────────
 
 app.post('/api/auth/register', handleRegister);
+app.post('/api/auth/demo', (req, res) => {
+  const { email, password } = req.body as { email?: string; password?: string };
+
+  if (email !== DEMO_EMAIL || password !== DEMO_PASSWORD) {
+    res.status(401).json({ error: 'Invalid demo credentials' });
+    return;
+  }
+
+  const demoUser = db.prepare(
+    `SELECT id, name, email FROM users WHERE email = ? ORDER BY id ASC LIMIT 1`
+  ).get(DEMO_EMAIL) as { id: number; name: string; email: string } | undefined;
+
+  if (!demoUser) {
+    res.status(500).json({ error: 'Demo profile is unavailable' });
+    return;
+  }
+
+  res.json({
+    user: {
+      id: demoUser.id,
+      name: demoUser.name,
+      email: demoUser.email,
+      is_demo: true,
+    },
+  });
+});
 
 // ── Protected Routes (iOS app only — require Supabase JWT) ───────────────────
 // Web UI routes (POST /api/users, GET /api/feed etc.) are intentionally public
@@ -695,22 +721,30 @@ app.post('/api/users/sync', async (req, res) => {
 
 // ── Job sites ─────────────────────────────────────────────────────────────────
 
-app.get('/api/sites', (_req, res) => res.json(listSites()));
+app.get('/api/sites', (req, res) => {
+  const userId = Number(req.query.userId ?? 0);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  res.json(listSites(userId));
+});
 
 app.post('/api/sites', (req, res) => {
-  const { name, url, notes, ats_type, ats_slug } = req.body as { name: string; url: string; notes?: string; ats_type?: string; ats_slug?: string };
-  if (!name?.trim() || !url?.trim()) { res.status(400).json({ error: 'name and url are required' }); return; }
-  try { res.json(addSite(name.trim(), url.trim(), notes?.trim(), ats_type?.trim(), ats_slug?.trim())); }
+  const { userId, name, url, notes, ats_type, ats_slug } = req.body as { userId?: number; name: string; url: string; notes?: string; ats_type?: string; ats_slug?: string };
+  if (!userId || !name?.trim() || !url?.trim()) { res.status(400).json({ error: 'userId, name and url are required' }); return; }
+  try { res.json(addSite(Number(userId), name.trim(), url.trim(), notes?.trim(), ats_type?.trim(), ats_slug?.trim())); }
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
 app.put('/api/sites/:id', (req, res) => {
-  try { updateSite(Number(req.params.id), req.body); res.json({ ok: true }); }
+  const { userId, ...fields } = req.body as { userId?: number } & Record<string, unknown>;
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  try { updateSite(Number(req.params.id), Number(userId), fields as any); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
 app.delete('/api/sites/:id', (req, res) => {
-  try { deleteSite(Number(req.params.id)); res.json({ ok: true }); }
+  const userId = Number(req.query.userId ?? 0);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  try { deleteSite(Number(req.params.id), userId); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
@@ -912,7 +946,9 @@ app.post('/api/feed/scan', async (req, res) => {
   res.flushHeaders();
 
   const signal = { aborted: false };
-  res.on('close', () => { signal.aborted = true; });
+  const markAborted = () => { signal.aborted = true; };
+  req.on('aborted', markAborted);
+  res.on('close', markAborted);
 
   const emit = (obj: object) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
 
@@ -962,7 +998,9 @@ app.post('/api/feed/reanalyze-all', async (req, res) => {
   res.flushHeaders();
 
   const signal = { aborted: false };
-  res.on('close', () => { signal.aborted = true; });
+  const markAborted = () => { signal.aborted = true; };
+  req.on('aborted', markAborted);
+  res.on('close', markAborted);
 
   const emit = (obj: object) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
 
@@ -987,7 +1025,12 @@ app.get('/api/settings', (_req, res) => res.json(getAllSettings()));
 
 app.post('/api/settings', (req, res) => {
   const patch = req.body as Record<string, string>;
-  const allowed = ['scan_enabled','scan_cron','scan_user_id','ntfy_topic','ntfy_server','alert_enabled','alert_threshold'];
+  const allowed = [
+    'scan_enabled','scan_cron','scan_user_id',
+    'discovery_enabled','discovery_cron','discovery_user_id',
+    'analyze_enabled','analyze_cron','analyze_user_id',
+    'ntfy_topic','ntfy_server','alert_enabled','alert_threshold','alert_cooldown_minutes',
+  ];
   for (const [k, v] of Object.entries(patch)) {
     if (allowed.includes(k)) setSetting(k, String(v ?? ''));
   }

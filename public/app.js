@@ -2,6 +2,9 @@
 
 const SUPABASE_URL  = 'https://kpjjwqarfuanxfgklmtm.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtwamp3cWFyZnVhbnhmZ2tsbXRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5OTc2NTAsImV4cCI6MjA5MTU3MzY1MH0.klZezIOEZwo4lWUmt8dPvU1FLPtkcHuAM8Rs5PbVWOU';
+const DEMO_EMAIL = 'demo@notchup.app';
+const DEMO_PASSWORD = 'Demo1234!';
+const DEMO_AUTH_STORAGE_KEY = 'demoAuth';
 
 if (!window.supabase) {
   console.error('Supabase CDN failed to load. Check network/CSP.');
@@ -28,6 +31,37 @@ function _setLoginError(msg) {
   if (!el) return;
   el.textContent = msg;
   el.classList.toggle('hidden', !msg);
+}
+
+function _clearDemoAuth() {
+  localStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
+}
+
+async function _activateDemoSession(demoUser) {
+  activeUserId = demoUser.id;
+  localStorage.setItem('activeUserId', String(demoUser.id));
+  localStorage.setItem(DEMO_AUTH_STORAGE_KEY, JSON.stringify(demoUser));
+  window._activeUserDbProfile = null;
+  updateSidebarUser(demoUser.name || 'Demo User', demoUser.email || DEMO_EMAIL);
+  showAppScreen();
+  _setDashGreeting(demoUser.name || 'Demo User');
+  loadDashboard();
+  refreshFeedTab();
+  if (window._loadResumeMaster) window._loadResumeMaster();
+}
+
+async function _tryDemoFallbackLogin(email, password) {
+  const res = await fetch('/api/auth/demo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.user) {
+    throw new Error(data?.error || 'Demo login failed');
+  }
+  await _activateDemoSession(data.user);
+  return data.user;
 }
 
 async function handleLoginSubmit() {
@@ -57,7 +91,20 @@ async function handleLoginSubmit() {
     }
     if (session) await onSessionReady(session);
   } catch (e) {
-    _setLoginError(e.message || 'Authentication failed');
+    const wantsDemoFallback = _loginMode === 'signin'
+      && email.toLowerCase() === DEMO_EMAIL
+      && pw === DEMO_PASSWORD;
+    if (wantsDemoFallback) {
+      try {
+        await _tryDemoFallbackLogin(email, pw);
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+        return;
+      } catch (fallbackErr) {
+        _setLoginError(fallbackErr.message || 'Demo login failed');
+      }
+    } else {
+      _setLoginError(e.message || 'Authentication failed');
+    }
     if (btn) { btn.disabled = false; btn.textContent = _loginMode === 'signin' ? 'Sign In' : 'Create Account'; }
   }
 }
@@ -67,12 +114,16 @@ async function handleDemoLogin() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading demo…'; }
   _setLoginError('');
   try {
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email: 'demo@notchup.app', password: 'Demo1234!' });
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
     if (error) throw new Error(error.message);
     if (data.session) await onSessionReady(data.session);
-    else _setLoginError('Demo login failed. Please try again.');
+    else await _tryDemoFallbackLogin(DEMO_EMAIL, DEMO_PASSWORD);
   } catch (e) {
-    _setLoginError('Demo unavailable: ' + (e.message || 'unknown error'));
+    try {
+      await _tryDemoFallbackLogin(DEMO_EMAIL, DEMO_PASSWORD);
+    } catch (fallbackErr) {
+      _setLoginError('Demo unavailable: ' + (fallbackErr.message || e.message || 'unknown error'));
+    }
   }
   if (btn) { btn.disabled = false; btn.innerHTML = '✨ Try Demo'; }
 }
@@ -106,12 +157,14 @@ async function signUp(email, password) {
 
 async function signOut() {
   await supabaseClient.auth.signOut();
+  _clearDemoAuth();
   activeUserId = null;
+  window._activeUserDbProfile = null;
   showLoginScreen();
 }
 
 async function loginAsDemo() {
-  return signIn('demo@notchup.app', 'Demo1234!');
+  return signIn(DEMO_EMAIL, DEMO_PASSWORD);
 }
 
 // Register the Supabase user with the Job Automator backend
@@ -131,6 +184,7 @@ async function registerWithBackend(session) {
     if (data.job_automator_user_id) {
       activeUserId = data.job_automator_user_id;
     }
+    _clearDemoAuth();
     return data; // expose to onSessionReady for onboarding check
   } catch (e) {
     console.error('registerWithBackend failed:', e);
@@ -287,7 +341,7 @@ async function loadDashboard() {
     const [cached, apps, sites, resumeData] = await Promise.all([
       api.get(`/api/feed/cached?userId=${activeUserId}`).catch(() => []),
       api.get(`/api/applications?userId=${activeUserId}`).catch(() => []),
-      api.get('/api/sites').catch(() => []),
+      api.get(`/api/sites?userId=${activeUserId}`).catch(() => []),
       api.get(activeUserId ? `/api/resume?userId=${activeUserId}` : '/api/resume').catch(() => ({})),
     ]);
 
@@ -497,6 +551,9 @@ function setResumeBadge(badge, content, found) {
 function switchTab(tab) {
   // Job Feed is merged into Dashboard — redirect any 'feed' navigation
   if (tab === 'feed') tab = 'dashboard';
+
+  const mainEl = document.querySelector('.main');
+  mainEl?.classList.toggle('assistant-mode', tab === 'assistant');
 
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
@@ -2730,6 +2787,47 @@ function appendFeedJobCard(feedJob, fromCache) {
   applyFeedFilter();
 }
 
+function upsertFeedScanResult(feedJob, fromCache) {
+  const url = feedJob?.job?.url;
+  if (!url) return;
+
+  const idx = feedResults.findIndex(r => r.feedJob.job.url === url);
+  const existingCard = document.querySelector(`#feed-results .feed-job-card-v2[data-url="${CSS.escape(url)}"]`);
+
+  if (idx >= 0) {
+    feedResults[idx] = { feedJob, fromCache };
+    if (existingCard) {
+      const replacement = buildFeedJobCard(feedJob, fromCache);
+      replacement.classList.add('fc-card-new');
+      if (fromCache) {
+        replacement.classList.add('fc-card-from-cache');
+        setTimeout(() => replacement.classList.add('fc-cache-settled'), 50);
+      }
+      existingCard.replaceWith(replacement);
+      applyFeedFilter();
+      clearTimeout(appendFeedJobCard._filterTimer);
+      appendFeedJobCard._filterTimer = setTimeout(() => buildDynamicFilters(feedResults), 400);
+    }
+    return;
+  }
+
+  feedResults.push({ feedJob, fromCache });
+  appendFeedJobCard(feedJob, fromCache);
+}
+
+function removeFeedUrls(urls = []) {
+  if (!Array.isArray(urls) || !urls.length) return;
+  const urlSet = new Set(urls);
+  feedResults = feedResults.filter(r => !urlSet.has(r.feedJob?.job?.url));
+  urls.forEach(url => {
+    const card = document.querySelector(`#feed-results .feed-job-card-v2[data-url="${CSS.escape(url)}"]`);
+    card?.remove();
+  });
+  applyFeedFilter();
+  clearTimeout(appendFeedJobCard._filterTimer);
+  appendFeedJobCard._filterTimer = setTimeout(() => buildDynamicFilters(feedResults), 200);
+}
+
 // Full rebuild — only called on sort change or initial load (not on filter/append).
 function renderFeedResults() {
   const resultsEl = document.getElementById('feed-results');
@@ -2805,7 +2903,7 @@ async function refreshFeedTab() {
     }
   }
 
-  const sites = await api.get('/api/sites');
+  const sites = await api.get(`/api/sites?userId=${activeUserId}`);
   const active = sites.filter(s => s.active);
   siteCount.textContent = active.length
     ? `${active.length} active site${active.length !== 1 ? 's' : ''} configured`
@@ -2846,7 +2944,7 @@ function initFeedTab() {
       const user = await api.get(`/api/users/${activeUserId}`);
       if (!user?.error) userInfo.textContent = `Scanning as: ${user.name}`;
     }
-    const sites = await api.get('/api/sites');
+    const sites = await api.get(`/api/sites?userId=${activeUserId}`);
     const active = sites.filter(s => s.active);
     siteCount.textContent = active.length
       ? `${active.length} active site${active.length !== 1 ? 's' : ''} configured`
@@ -2857,7 +2955,7 @@ function initFeedTab() {
 
   scanBtn.addEventListener('click', async () => {
     if (!activeUserId) { toast('Select a profile first', 'error'); return; }
-    const sites = await api.get('/api/sites');
+    const sites = await api.get(`/api/sites?userId=${activeUserId}`);
     if (!sites.filter(s => s.active).length) {
       toast('Add at least one active site in Settings first', 'error');
       return;
@@ -2866,6 +2964,9 @@ function initFeedTab() {
   });
 
   stopBtn.addEventListener('click', () => {
+    const labelEl = document.getElementById('feed-progress-label');
+    if (labelEl) labelEl.textContent = 'Stopping scan…';
+    stopBtn.disabled = true;
     feedScanController?.abort();
   });
 
@@ -2911,15 +3012,12 @@ async function startFeedScan(userId) {
 
   scanBtn.classList.add('hidden');
   stopBtn.classList.remove('hidden');
+  stopBtn.disabled = false;
   progressEl.classList.remove('hidden');
   summaryEl.classList.add('hidden');
-  resultsEl.innerHTML = '';
   resultsEl.dataset.scanActive = '1';
   fillEl.style.width = '0%';
-  feedResults = [];
-
-  // Reset dynamic filters for new scan
-  buildDynamicFilters([]);
+  const startingCount = feedResults.length;
 
   // Show scan animation grid (clears previous cards)
   if (scanCardsEl) {
@@ -2933,8 +3031,11 @@ async function startFeedScan(userId) {
   let fromCache    = 0;
   let skipped      = 0;
   let totalRemoved = 0;
+  let discovered   = 0;
+  let wasCancelled = false;
 
-  await api.stream('/api/feed/scan', { userId }, evt => {
+  try {
+    await api.stream('/api/feed/scan', { userId }, evt => {
     if (evt.type === 'scan_start') {
       totalSites = evt.total_sites || 0;
       labelEl.textContent = `Starting scan across ${totalSites} site${totalSites !== 1 ? 's' : ''}…`;
@@ -2951,21 +3052,35 @@ async function startFeedScan(userId) {
       _scanAnimSetStatus(evt.site_name, `${evt.job_count} job${evt.job_count !== 1 ? 's' : ''} found`);
     } else if (evt.type === 'job_analyzing') {
       labelEl.textContent = `Analyzing: ${evt.job?.job?.title ?? '…'}`;
+    } else if (evt.type === 'job_discovered') {
+      discovered++;
+      labelEl.textContent = `Found: ${evt.job?.job?.title ?? '…'}`;
+      upsertFeedScanResult(evt.job, false);
+      const liveCount = feedResults.length;
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:12px;color:var(--text-dim)">
+            Showing ${liveCount} discovered job${liveCount !== 1 ? 's' : ''}${startingCount ? ` (${startingCount} already cached)` : ''} while scoring runs…
+          </div>
+        </div>`;
     } else if (evt.type === 'job_result') {
       if (evt.from_cache) {
         fromCache++;
         labelEl.textContent = `From cache: ${evt.job?.job?.title ?? '…'}`;
-      } else {
+      } else if (evt.job?.analyzed) {
         analyzed++;
+        labelEl.textContent = `Scored: ${evt.job?.job?.title ?? '…'}`;
       }
-      feedResults.push({ feedJob: evt.job, fromCache: !!evt.from_cache });
-      appendFeedJobCard(evt.job, !!evt.from_cache);
+      upsertFeedScanResult(evt.job, !!evt.from_cache);
       // Update live summary count
       const liveCount = feedResults.length;
       summaryEl.classList.remove('hidden');
       summaryEl.innerHTML = `
         <div class="card" style="border-color:var(--border-soft)">
-          <div style="font-size:12px;color:var(--text-dim)">${liveCount} job${liveCount !== 1 ? 's' : ''} found so far…</div>
+          <div style="font-size:12px;color:var(--text-dim)">
+            Showing ${liveCount} discovered job${liveCount !== 1 ? 's' : ''}${startingCount ? ` (${startingCount} already cached)` : ''} · ${analyzed} scored so far…
+          </div>
         </div>`;
     } else if (evt.type === 'job_filtered') {
       skipped++;
@@ -2984,11 +3099,25 @@ async function startFeedScan(userId) {
       _scanAnimUpsertCard(evt.site_name, '', 'done', jobCount, null);
       if (evt.removed?.length) {
         totalRemoved += evt.removed.length;
+        removeFeedUrls(evt.removed.map(r => r.url));
         const notice = document.createElement('div');
         notice.style.cssText = 'font-size:11px;color:var(--text-muted);padding:6px 2px';
         notice.innerHTML = `${ICON_X} ${evt.removed.length} job${evt.removed.length !== 1 ? 's' : ''} removed from <strong>${esc(evt.site_name)}</strong> (no longer listed): ${evt.removed.map(r => esc(r.title)).join(', ')}`;
         resultsEl.appendChild(notice);
       }
+    } else if (evt.type === 'scan_cancelled') {
+      wasCancelled = true;
+      fillEl.style.width = '100%';
+      labelEl.textContent = evt.message || 'Scan stopped';
+      summaryEl.classList.remove('hidden');
+      const removedLine = totalRemoved ? ` · ${totalRemoved} removed` : '';
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:13px;font-weight:600;color:var(--text)">${ICON_X} Scan stopped</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:6px">
+            ${feedResults.length} visible · ${discovered} discovered · ${analyzed} scored · ${fromCache} from cache · ${skipped} filtered${removedLine}
+          </div>
+        </div>`;
     } else if (evt.type === 'scan_done') {
       fillEl.style.width = '100%';
       labelEl.textContent = evt.message || 'Scan complete';
@@ -3003,19 +3132,30 @@ async function startFeedScan(userId) {
         <div class="card" style="border-color:var(--success-border)">
           <div style="font-size:13px;font-weight:600;color:var(--success)">${ICON_CHECK} Scan complete</div>
           <div style="font-size:12px;color:var(--text-dim);margin-top:6px">
-            ${analyzed} new · ${fromCache} from cache · ${skipped} filtered${removedLine} · ${totalSites} site${totalSites !== 1 ? 's' : ''}
+            ${feedResults.length} visible · ${discovered} discovered · ${analyzed} scored · ${fromCache} from cache · ${skipped} filtered${removedLine} · ${totalSites} site${totalSites !== 1 ? 's' : ''}
           </div>
         </div>`;
     } else if (evt.type === 'error') {
       labelEl.textContent = `Error: ${evt.message}`;
     }
-  }, feedScanController?.signal);
+    }, feedScanController?.signal);
+  } finally {
+    if (feedScanController?.signal?.aborted && !wasCancelled) {
+      labelEl.textContent = 'Stopping scan…';
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:12px;color:var(--text-dim)">Stop requested. Finishing the current step…</div>
+        </div>`;
+    }
+  }
 
   delete resultsEl.dataset.scanActive;
   feedScanController = null;
 
   scanBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
+  stopBtn.disabled = false;
 }
 
 async function startReanalyzeAll(userId) {
@@ -3030,6 +3170,7 @@ async function startReanalyzeAll(userId) {
 
   scanBtn.classList.add('hidden');
   stopBtn.classList.remove('hidden');
+  stopBtn.disabled = false;
   progressEl.classList.remove('hidden');
   summaryEl.classList.add('hidden');
   fillEl.style.width = '5%';
@@ -3037,8 +3178,10 @@ async function startReanalyzeAll(userId) {
 
   let done = 0;
   const total = feedResults.length;
+  let wasCancelled = false;
 
-  await api.stream('/api/feed/reanalyze-all', { userId }, evt => {
+  try {
+    await api.stream('/api/feed/reanalyze-all', { userId }, evt => {
     if (evt.type === 'job_analyzing') {
       labelEl.textContent = `Re-analyzing: ${evt.job?.job?.title ?? '…'}`;
     } else if (evt.type === 'job_result') {
@@ -3056,6 +3199,16 @@ async function startReanalyzeAll(userId) {
       }
     } else if (evt.type === 'site_error') {
       toast(`${evt.site_name}: ${evt.message}`, 'error');
+    } else if (evt.type === 'scan_cancelled') {
+      wasCancelled = true;
+      fillEl.style.width = total ? `${Math.round((done / total) * 100)}%` : '100%';
+      labelEl.textContent = evt.message || 'Re-analysis stopped';
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:13px;font-weight:600;color:var(--text)">${ICON_X} Re-analysis stopped</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:6px">${evt.message}</div>
+        </div>`;
     } else if (evt.type === 'scan_done') {
       fillEl.style.width = '100%';
       labelEl.textContent = evt.message || 'Re-analysis complete';
@@ -3069,11 +3222,21 @@ async function startReanalyzeAll(userId) {
     } else if (evt.type === 'error') {
       labelEl.textContent = `Error: ${evt.message}`;
     }
-  }, feedScanController.signal);
+    }, feedScanController.signal);
+  } finally {
+    if (feedScanController?.signal?.aborted && !wasCancelled) {
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:12px;color:var(--text-dim)">Stop requested. Finishing the current step…</div>
+        </div>`;
+    }
+  }
 
   feedScanController = null;
   scanBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
+  stopBtn.disabled = false;
 }
 
 // ── Feed card helpers ──────────────────────────────────────────────────────────
@@ -3409,7 +3572,7 @@ function atsSelectHTML(id, current) {
 }
 
 async function loadSitesAdmin(container) {
-  const sites = await api.get('/api/sites');
+  const sites = await api.get(`/api/sites?userId=${activeUserId}`);
 
   const section = document.createElement('div');
   section.innerHTML = `
@@ -3438,13 +3601,13 @@ async function loadSitesAdmin(container) {
     const ats_type = section.querySelector('#site-ats-type').value.trim();
     const ats_slug = section.querySelector('#site-ats-slug').value.trim();
     if (!name || !url) { toast('Name and URL are required', 'error'); return; }
-    const result = await api.post('/api/sites', { name, url, ats_type, ats_slug });
+    const result = await api.post('/api/sites', { userId: activeUserId, name, url, ats_type, ats_slug });
     if (result.error) { toast(result.error, 'error'); return; }
     section.querySelector('#site-name-input').value = '';
     section.querySelector('#site-url-input').value = '';
     section.querySelector('#site-ats-slug').value = '';
     section.querySelector('#site-ats-type').value = '';
-    const newSites = await api.get('/api/sites');
+    const newSites = await api.get(`/api/sites?userId=${activeUserId}`);
     renderSitesTable(section.querySelector('#sites-table-wrap'), newSites);
     toast('Site added');
   });
@@ -3492,15 +3655,15 @@ function renderSitesTable(container, sites) {
         const ats_slug = document.getElementById(`ats-slug-${id}`).value.trim();
         await authFetch(`/api/sites/${id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ats_type, ats_slug }),
+          body: JSON.stringify({ userId: activeUserId, ats_type, ats_slug }),
         });
-        const newSites = await api.get('/api/sites');
+        const newSites = await api.get(`/api/sites?userId=${activeUserId}`);
         renderSitesTable(container, newSites);
         toast('ATS config saved');
       });
 
       cell.querySelector('.ats-cancel').addEventListener('click', async () => {
-        const newSites = await api.get('/api/sites');
+        const newSites = await api.get(`/api/sites?userId=${activeUserId}`);
         renderSitesTable(container, newSites);
       });
     });
@@ -3512,9 +3675,9 @@ function renderSitesTable(container, sites) {
       const active = btn.dataset.active === '1';
       await authFetch(`/api/sites/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: !active }),
+        body: JSON.stringify({ userId: activeUserId, active: !active }),
       });
-      const newSites = await api.get('/api/sites');
+      const newSites = await api.get(`/api/sites?userId=${activeUserId}`);
       renderSitesTable(container, newSites);
     });
   });
@@ -3522,8 +3685,8 @@ function renderSitesTable(container, sites) {
   wrap.querySelectorAll('.site-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Remove this site?')) return;
-      await authFetch(`/api/sites/${btn.dataset.id}`, { method: 'DELETE' });
-      const newSites = await api.get('/api/sites');
+      await authFetch(`/api/sites/${btn.dataset.id}?userId=${activeUserId}`, { method: 'DELETE' });
+      const newSites = await api.get(`/api/sites?userId=${activeUserId}`);
       renderSitesTable(container, newSites);
     });
   });
@@ -4265,13 +4428,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     refreshFeedTab();
     if (window._loadResumeMaster) window._loadResumeMaster();
   } else {
-    showLoginScreen();
+    const demoAuthRaw = localStorage.getItem(DEMO_AUTH_STORAGE_KEY);
+    if (demoAuthRaw) {
+      try {
+        const demoUser = JSON.parse(demoAuthRaw);
+        if (demoUser?.id) {
+          await _activateDemoSession(demoUser);
+        } else {
+          _clearDemoAuth();
+          showLoginScreen();
+        }
+      } catch {
+        _clearDemoAuth();
+        showLoginScreen();
+      }
+    } else {
+      showLoginScreen();
+    }
   }
 
   // Listen for future auth state changes (e.g. token refresh, sign-out from another tab)
   supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
+      _clearDemoAuth();
       activeUserId = null;
+      window._activeUserDbProfile = null;
       showLoginScreen();
     }
   });
@@ -4408,37 +4589,91 @@ async function loadObservability() {
 
   const settingsSection = document.createElement('div');
   settingsSection.innerHTML = `
-    <div class="section-title" style="margin-top:28px">Auto-Scan Schedule</div>
+    <div class="section-title" style="margin-top:28px">Automation Schedule</div>
+    <div class="card" style="margin-bottom:14px">
+      <div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">
+        Discovery finds and refreshes jobs quickly. Analyze scores the jobs already in your feed against the selected profile.
+      </div>
+      <div class="settings-grid">
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">1. Job Discovery</div>
+          <div style="font-size:12px;color:var(--text-dim)">Crawls active sites, adds new listings, and removes listings that disappeared.</div>
+        </div>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">2. Job Analyze</div>
+          <div style="font-size:12px;color:var(--text-dim)">Scores the current feed against a profile’s resume and preferences.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">Job Discovery Schedule</div>
     <div class="card" style="margin-bottom:14px">
       <div class="settings-grid">
         <div class="form-group">
           <label class="label">Enabled</label>
           <div class="mode-toggle">
-            <button class="mode-btn ${settings.scan_enabled === '1' ? 'active' : ''}" id="scan-toggle-on" data-val="1">On</button>
-            <button class="mode-btn ${settings.scan_enabled !== '1' ? 'active' : ''}" id="scan-toggle-off" data-val="0">Off</button>
+            <button class="mode-btn ${(settings.discovery_enabled || settings.scan_enabled) === '1' ? 'active' : ''}" id="discovery-toggle-on" data-val="1">On</button>
+            <button class="mode-btn ${(settings.discovery_enabled || settings.scan_enabled) !== '1' ? 'active' : ''}" id="discovery-toggle-off" data-val="0">Off</button>
           </div>
         </div>
         <div class="form-group">
           <label class="label">Run as profile</label>
-          <select id="scan-user-select" class="input">
+          <select id="discovery-user-select" class="input">
             <option value="">— select —</option>
-            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === settings.scan_user_id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === (settings.discovery_user_id || settings.scan_user_id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
           </select>
         </div>
       </div>
       <div class="form-group" style="margin-top:14px">
         <label class="label">Schedule <span class="label-hint">cron expression — e.g. <code style="font-family:var(--mono)">0 9 * * *</code> = daily at 9am</span></label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 9 * * *">Daily 9am</button>
-          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 9 * * 1-5">Weekdays 9am</button>
-          <button class="btn btn-secondary btn-sm scan-preset" data-cron="0 */6 * * *">Every 6 h</button>
+          <button class="btn btn-secondary btn-sm discovery-preset" data-cron="0 9 * * *">Daily 9am</button>
+          <button class="btn btn-secondary btn-sm discovery-preset" data-cron="0 9 * * 1-5">Weekdays 9am</button>
+          <button class="btn btn-secondary btn-sm discovery-preset" data-cron="0 */6 * * *">Every 6 h</button>
         </div>
-        <input id="scan-cron-input" class="input" style="margin-top:8px;font-family:var(--mono)"
-          value="${esc(settings.scan_cron || '0 9 * * *')}" placeholder="0 9 * * *" />
+        <input id="discovery-cron-input" class="input" style="margin-top:8px;font-family:var(--mono)"
+          value="${esc(settings.discovery_cron || settings.scan_cron || '0 9 * * *')}" placeholder="0 9 * * *" />
       </div>
       <div style="margin-top:14px">
-        <button class="btn btn-primary btn-sm" id="save-schedule-btn">Save Schedule</button>
-        <span id="schedule-save-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+        <button class="btn btn-primary btn-sm" id="save-discovery-schedule-btn">Save Discovery Schedule</button>
+        <span id="discovery-schedule-save-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
+      </div>
+    </div>
+
+    <div class="section-title">Job Analyze Schedule</div>
+    <div class="card" style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
+        This runs a scoring pass across the jobs already in the feed. A common pattern is frequent discovery and less frequent analysis.
+      </div>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label class="label">Enabled</label>
+          <div class="mode-toggle">
+            <button class="mode-btn ${(settings.analyze_enabled || settings.scan_enabled) === '1' ? 'active' : ''}" id="analyze-toggle-on" data-val="1">On</button>
+            <button class="mode-btn ${(settings.analyze_enabled || settings.scan_enabled) !== '1' ? 'active' : ''}" id="analyze-toggle-off" data-val="0">Off</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="label">Run as profile</label>
+          <select id="analyze-user-select" class="input">
+            <option value="">— select —</option>
+            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === (settings.analyze_user_id || settings.scan_user_id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:14px">
+        <label class="label">Schedule</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn-secondary btn-sm analyze-preset" data-cron="30 9 * * *">Daily 9:30am</button>
+          <button class="btn btn-secondary btn-sm analyze-preset" data-cron="30 9 * * 1-5">Weekdays 9:30am</button>
+          <button class="btn btn-secondary btn-sm analyze-preset" data-cron="0 */12 * * *">Every 12 h</button>
+        </div>
+        <input id="analyze-cron-input" class="input" style="margin-top:8px;font-family:var(--mono)"
+          value="${esc(settings.analyze_cron || '30 9 * * *')}" placeholder="30 9 * * *" />
+      </div>
+      <div style="margin-top:14px">
+        <button class="btn btn-primary btn-sm" id="save-analyze-schedule-btn">Save Analyze Schedule</button>
+        <span id="analyze-schedule-save-status" style="font-size:12px;color:var(--text-dim);margin-left:10px"></span>
       </div>
     </div>
 
@@ -4487,12 +4722,21 @@ async function loadObservability() {
   container.appendChild(settingsSection);
 
   // Schedule enabled toggle
-  let scanEnabled = settings.scan_enabled === '1';
-  settingsSection.querySelectorAll('[id^="scan-toggle-"]').forEach(btn => {
+  let discoveryEnabled = (settings.discovery_enabled || settings.scan_enabled) === '1';
+  settingsSection.querySelectorAll('[id^="discovery-toggle-"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      scanEnabled = btn.dataset.val === '1';
-      settingsSection.querySelector('#scan-toggle-on').classList.toggle('active', scanEnabled);
-      settingsSection.querySelector('#scan-toggle-off').classList.toggle('active', !scanEnabled);
+      discoveryEnabled = btn.dataset.val === '1';
+      settingsSection.querySelector('#discovery-toggle-on').classList.toggle('active', discoveryEnabled);
+      settingsSection.querySelector('#discovery-toggle-off').classList.toggle('active', !discoveryEnabled);
+    });
+  });
+
+  let analyzeEnabled = (settings.analyze_enabled || settings.scan_enabled) === '1';
+  settingsSection.querySelectorAll('[id^="analyze-toggle-"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      analyzeEnabled = btn.dataset.val === '1';
+      settingsSection.querySelector('#analyze-toggle-on').classList.toggle('active', analyzeEnabled);
+      settingsSection.querySelector('#analyze-toggle-off').classList.toggle('active', !analyzeEnabled);
     });
   });
 
@@ -4507,20 +4751,37 @@ async function loadObservability() {
   });
 
   // Cron presets
-  settingsSection.querySelectorAll('.scan-preset').forEach(btn => {
+  settingsSection.querySelectorAll('.discovery-preset').forEach(btn => {
     btn.addEventListener('click', () => {
-      settingsSection.querySelector('#scan-cron-input').value = btn.dataset.cron;
+      settingsSection.querySelector('#discovery-cron-input').value = btn.dataset.cron;
     });
   });
 
-  // Save schedule
-  settingsSection.querySelector('#save-schedule-btn').addEventListener('click', async () => {
-    const status = settingsSection.querySelector('#schedule-save-status');
+  settingsSection.querySelectorAll('.analyze-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      settingsSection.querySelector('#analyze-cron-input').value = btn.dataset.cron;
+    });
+  });
+
+  settingsSection.querySelector('#save-discovery-schedule-btn').addEventListener('click', async () => {
+    const status = settingsSection.querySelector('#discovery-schedule-save-status');
     status.textContent = 'Saving…';
     await api.post('/api/settings', {
-      scan_enabled:  scanEnabled ? '1' : '0',
-      scan_cron:     settingsSection.querySelector('#scan-cron-input').value.trim(),
-      scan_user_id:  settingsSection.querySelector('#scan-user-select').value,
+      discovery_enabled: discoveryEnabled ? '1' : '0',
+      discovery_cron: settingsSection.querySelector('#discovery-cron-input').value.trim(),
+      discovery_user_id: settingsSection.querySelector('#discovery-user-select').value,
+    });
+    status.textContent = '✓ Saved';
+    setTimeout(() => { status.textContent = ''; }, 2500);
+  });
+
+  settingsSection.querySelector('#save-analyze-schedule-btn').addEventListener('click', async () => {
+    const status = settingsSection.querySelector('#analyze-schedule-save-status');
+    status.textContent = 'Saving…';
+    await api.post('/api/settings', {
+      analyze_enabled: analyzeEnabled ? '1' : '0',
+      analyze_cron: settingsSection.querySelector('#analyze-cron-input').value.trim(),
+      analyze_user_id: settingsSection.querySelector('#analyze-user-select').value,
     });
     status.textContent = '✓ Saved';
     setTimeout(() => { status.textContent = ''; }, 2500);
@@ -5265,6 +5526,7 @@ async function _regOnboardFinish() {
     if (!preset) continue;
     try {
       await api.post('/api/sites', {
+        userId:   activeUserId,
         name:     preset.name,
         url:      `https://${preset.domain}/careers`,
         ats_type: preset.ats,
@@ -5280,6 +5542,7 @@ async function _regOnboardFinish() {
   if (liUrl) {
     try {
       await api.post('/api/sites', {
+        userId: activeUserId,
         name: 'LinkedIn Search',
         url:  liUrl,
       });
@@ -5294,6 +5557,7 @@ async function _regOnboardFinish() {
     try {
       const hostname = (() => { try { return new URL(cuUrl).hostname; } catch { return cuUrl; } })();
       await api.post('/api/sites', {
+        userId: activeUserId,
         name: hostname,
         url:  cuUrl,
       });

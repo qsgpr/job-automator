@@ -74,6 +74,20 @@ db.exec(`
     UNIQUE(user_id, job_url)
   );
 
+  CREATE TABLE IF NOT EXISTS scraped_jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id       INTEGER NOT NULL,
+    job_url       TEXT NOT NULL UNIQUE,
+    job_title     TEXT NOT NULL DEFAULT '',
+    location      TEXT NOT NULL DEFAULT '',
+    department    TEXT NOT NULL DEFAULT '',
+    jd_text       TEXT,
+    scrape_status TEXT NOT NULL DEFAULT 'discovered',
+    scrape_error  TEXT,
+    first_seen    TEXT NOT NULL,
+    last_seen     TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS analysis_inputs (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     time      TEXT NOT NULL,
@@ -418,6 +432,32 @@ try { db.exec(`ALTER TABLE users ADD COLUMN years_experience     TEXT NOT NULL D
 try { db.exec(`ALTER TABLE users ADD COLUMN ts_proficiency       TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN llm_frameworks       TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN additional_info      TEXT NOT NULL DEFAULT ''`); } catch {}
+
+// ── Per-user job_sites migration ──────────────────────────────────────────────
+// Recreates job_sites with user_id + UNIQUE(user_id, url) if not yet migrated.
+{
+  const cols = (db.prepare('PRAGMA table_info(job_sites)').all() as any[]).map((c: any) => c.name);
+  if (!cols.includes('user_id')) {
+    db.exec(`
+      CREATE TABLE job_sites_v2 (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id  INTEGER NOT NULL DEFAULT 2,
+        name     TEXT NOT NULL,
+        url      TEXT NOT NULL,
+        notes    TEXT NOT NULL DEFAULT '',
+        active   INTEGER NOT NULL DEFAULT 1,
+        ats_type TEXT NOT NULL DEFAULT '',
+        ats_slug TEXT NOT NULL DEFAULT '',
+        added_at TEXT NOT NULL,
+        UNIQUE(user_id, url)
+      );
+      INSERT OR IGNORE INTO job_sites_v2 (id, user_id, name, url, notes, active, ats_type, ats_slug, added_at)
+        SELECT id, 2, name, url, notes, active, ats_type, ats_slug, added_at FROM job_sites;
+      DROP TABLE job_sites;
+      ALTER TABLE job_sites_v2 RENAME TO job_sites;
+    `);
+  }
+}
 
 // ── Application logging helpers ───────────────────────────────────────────────
 

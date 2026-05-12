@@ -161,22 +161,22 @@ function rowToSite(row: Record<string, unknown>): JobSite {
   };
 }
 
-export function listSites(): JobSite[] {
-  return (db.prepare(`SELECT * FROM job_sites ORDER BY added_at DESC`).all() as Record<string, unknown>[]).map(rowToSite);
+export function listSites(userId: number): JobSite[] {
+  return (db.prepare(`SELECT * FROM job_sites WHERE user_id = ? ORDER BY added_at DESC`).all(userId) as Record<string, unknown>[]).map(rowToSite);
 }
 
-export function getActiveSites(): JobSite[] {
-  return (db.prepare(`SELECT * FROM job_sites WHERE active = 1 ORDER BY added_at`).all() as Record<string, unknown>[]).map(rowToSite);
+export function getActiveSites(userId: number): JobSite[] {
+  return (db.prepare(`SELECT * FROM job_sites WHERE active = 1 AND user_id = ? ORDER BY added_at`).all(userId) as Record<string, unknown>[]).map(rowToSite);
 }
 
-export function addSite(name: string, url: string, notes = '', ats_type = '', ats_slug = ''): JobSite {
+export function addSite(userId: number, name: string, url: string, notes = '', ats_type = '', ats_slug = ''): JobSite {
   const { lastInsertRowid } = db.prepare(
-    `INSERT INTO job_sites (name, url, notes, active, added_at, ats_type, ats_slug) VALUES (?, ?, ?, 1, ?, ?, ?)`
-  ).run(name, url, notes, now(), ats_type, ats_slug);
+    `INSERT INTO job_sites (user_id, name, url, notes, active, added_at, ats_type, ats_slug) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`
+  ).run(userId, name, url, notes, now(), ats_type, ats_slug);
   return rowToSite(db.prepare(`SELECT * FROM job_sites WHERE id = ?`).get(lastInsertRowid as number) as Record<string, unknown>);
 }
 
-export function updateSite(id: number, fields: Partial<Pick<JobSite, 'name' | 'url' | 'notes' | 'active' | 'ats_type' | 'ats_slug'>>): void {
+export function updateSite(id: number, userId: number, fields: Partial<Pick<JobSite, 'name' | 'url' | 'notes' | 'active' | 'ats_type' | 'ats_slug'>>): void {
   const sets: string[] = [];
   const vals: unknown[] = [];
 
@@ -188,12 +188,12 @@ export function updateSite(id: number, fields: Partial<Pick<JobSite, 'name' | 'u
   if (fields.ats_slug !== undefined) { sets.push('ats_slug = ?'); vals.push(fields.ats_slug); }
 
   if (!sets.length) return;
-  vals.push(id);
-  db.prepare(`UPDATE job_sites SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  vals.push(id, userId);
+  db.prepare(`UPDATE job_sites SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);
 }
 
-export function deleteSite(id: number): void {
-  db.prepare(`DELETE FROM job_sites WHERE id = ?`).run(id);
+export function deleteSite(id: number, userId: number): void {
+  db.prepare(`DELETE FROM job_sites WHERE id = ? AND user_id = ?`).run(id, userId);
 }
 
 // ── Feed job cache ─────────────────────────────────────────────────────────────
@@ -208,6 +208,18 @@ export interface CachedFeedJob {
   match_score:   number | null;
   filter_result: FeedFilterResult;
   warnings:      string[];
+  first_seen:    string;
+  last_seen:     string;
+}
+
+export interface ScrapedJobCache {
+  id:            number;
+  site_id:       number;
+  site_name:     string;
+  job:           Job;
+  jd_text:       string | null;
+  scrape_status: string;
+  scrape_error:  string | null;
   first_seen:    string;
   last_seen:     string;
 }
@@ -233,6 +245,25 @@ function rowToCached(row: Record<string, unknown>): CachedFeedJob {
   };
 }
 
+function rowToScrapedJob(row: Record<string, unknown>): ScrapedJobCache {
+  return {
+    id:         row.id as number,
+    site_id:    row.site_id as number,
+    site_name:  (row.site_name as string) ?? '',
+    job: {
+      title:      row.job_title as string,
+      url:        row.job_url as string,
+      location:   (row.location as string) ?? '',
+      department: (row.department as string) ?? '',
+    },
+    jd_text:       (row.jd_text as string) ?? null,
+    scrape_status: (row.scrape_status as string) ?? 'discovered',
+    scrape_error:  (row.scrape_error as string) ?? null,
+    first_seen:    row.first_seen as string,
+    last_seen:     row.last_seen as string,
+  };
+}
+
 /** Returns the cached entry for this user+job if it exists, else null. */
 export function getCachedFeedJob(userId: number, jobUrl: string): CachedFeedJob | null {
   const row = db.prepare(`
@@ -242,6 +273,84 @@ export function getCachedFeedJob(userId: number, jobUrl: string): CachedFeedJob 
     WHERE f.user_id = ? AND f.job_url = ?
   `).get(userId, jobUrl) as Record<string, unknown> | undefined;
   return row ? rowToCached(row) : null;
+}
+
+export function getScrapedJob(jobUrl: string): ScrapedJobCache | null {
+  const row = db.prepare(`
+    SELECT sj.*, s.name AS site_name
+    FROM scraped_jobs sj
+    LEFT JOIN job_sites s ON s.id = sj.site_id
+    WHERE sj.job_url = ?
+  `).get(jobUrl) as Record<string, unknown> | undefined;
+  return row ? rowToScrapedJob(row) : null;
+}
+
+export function listScrapedJobsForSites(siteIds: number[]): ScrapedJobCache[] {
+  if (!siteIds.length) return [];
+  const placeholders = siteIds.map(() => '?').join(', ');
+  return (db.prepare(`
+    SELECT sj.*, s.name AS site_name
+    FROM scraped_jobs sj
+    LEFT JOIN job_sites s ON s.id = sj.site_id
+    WHERE sj.site_id IN (${placeholders})
+    ORDER BY sj.last_seen DESC
+  `).all(...siteIds) as Record<string, unknown>[]).map(rowToScrapedJob);
+}
+
+export function upsertScrapedJob(siteId: number, job: Job): void {
+  const ts = now();
+  const existing = getScrapedJob(job.url);
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO scraped_jobs
+        (site_id, job_url, job_title, location, department, jd_text, scrape_status, scrape_error, first_seen, last_seen)
+      VALUES (?, ?, ?, ?, ?, NULL, 'discovered', NULL, ?, ?)
+    `).run(siteId, job.url, job.title, job.location, job.department, ts, ts);
+    return;
+  }
+
+  db.prepare(`
+    UPDATE scraped_jobs
+    SET site_id = ?, job_title = ?, location = ?, department = ?, last_seen = ?
+    WHERE job_url = ?
+  `).run(siteId, job.title, job.location, job.department, ts, job.url);
+}
+
+export function setScrapedJobContent(jobUrl: string, jdText: string): void {
+  db.prepare(`
+    UPDATE scraped_jobs
+    SET jd_text = ?, scrape_status = 'scraped', scrape_error = NULL, last_seen = ?
+    WHERE job_url = ?
+  `).run(jdText, now(), jobUrl);
+}
+
+export function markScrapedJobError(jobUrl: string, message: string): void {
+  db.prepare(`
+    UPDATE scraped_jobs
+    SET scrape_status = 'error', scrape_error = ?, last_seen = ?
+    WHERE job_url = ?
+  `).run(message, now(), jobUrl);
+}
+
+export function removeStaleScrapedJobs(siteId: number, currentUrls: string[]): { title: string; url: string }[] {
+  if (!currentUrls.length) return [];
+  const placeholders = currentUrls.map(() => '?').join(', ');
+  const stale = db.prepare(`
+    SELECT job_title AS title, job_url AS url
+    FROM scraped_jobs
+    WHERE site_id = ?
+      AND job_url NOT IN (${placeholders})
+  `).all(siteId, ...currentUrls) as { title: string; url: string }[];
+
+  if (stale.length) {
+    db.prepare(`
+      DELETE FROM scraped_jobs
+      WHERE site_id = ?
+        AND job_url NOT IN (${placeholders})
+    `).run(siteId, ...currentUrls);
+  }
+
+  return stale;
 }
 
 /** Insert a new job or update last_seen + analysis when re-seen. */
