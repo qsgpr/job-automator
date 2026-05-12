@@ -115,6 +115,7 @@ async function loginAsDemo() {
 }
 
 // Register the Supabase user with the Job Automator backend
+// Returns the full response data so callers can check is_new / user info.
 async function registerWithBackend(session) {
   const user = session.user;
   const name = user.user_metadata?.full_name
@@ -130,8 +131,10 @@ async function registerWithBackend(session) {
     if (data.job_automator_user_id) {
       activeUserId = data.job_automator_user_id;
     }
+    return data; // expose to onSessionReady for onboarding check
   } catch (e) {
     console.error('registerWithBackend failed:', e);
+    return null;
   }
 }
 
@@ -223,7 +226,7 @@ function initLoginScreen() {
 
 async function onSessionReady(session) {
   // Register with backend — this sets activeUserId to the correct user
-  await registerWithBackend(session);
+  const regData = await registerWithBackend(session);
 
   // Show logged-in user in sidebar
   const name  = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '';
@@ -241,6 +244,22 @@ async function onSessionReady(session) {
   // Load dashboard data
   loadDashboard();
   if (window._loadResumeMaster) window._loadResumeMaster();
+
+  // Show registration onboarding for brand-new users (no resume yet)
+  if (activeUserId) {
+    try {
+      const userData = await api.get(`/api/users/${activeUserId}`);
+      const resumeText = userData?.resume_text || '';
+      const needsOnboarding = !resumeText || resumeText.trim().length < 50;
+      if (needsOnboarding) {
+        // Small delay so the dashboard renders first
+        setTimeout(() => showRegistrationOnboarding(name, email), 400);
+      }
+    } catch (e) {
+      // Non-fatal — skip onboarding check on error
+      console.warn('Onboarding check failed:', e);
+    }
+  }
 }
 
 function _setDashGreeting(name) {
@@ -318,7 +337,7 @@ async function loadDashboard() {
             name: 'Run your first scan',
             hint: 'AI scores every job against your profile',
             done: !needsScan,
-            action: !needsScan ? null : { label: 'Start Scan', scan: true },
+            action: !needsScan ? null : { label: 'Scan New Jobs', scan: true },
           },
         ];
 
@@ -332,7 +351,7 @@ async function loadDashboard() {
             ${s.action ? `
               <div class="dash-step-action">
                 ${s.action.scan
-                  ? `<button class="btn btn-primary btn-sm dash-step-scan-btn">Start Scan</button>`
+                  ? `<button class="btn btn-primary btn-sm dash-step-scan-btn">Scan New Jobs</button>`
                   : `<button class="btn btn-secondary btn-sm" data-tab="${s.action.tab}">${esc(s.action.label)}</button>`
                 }
               </div>` : ''}
@@ -340,62 +359,12 @@ async function loadDashboard() {
 
         stepsEl.querySelectorAll('.dash-step-scan-btn').forEach(btn => {
           btn.addEventListener('click', () => {
-            switchTab('feed');
-            setTimeout(() => document.getElementById('feed-scan-btn')?.click(), 150);
+            document.getElementById('feed-scan-btn')?.click();
           });
         });
       }
     }
 
-    // Top 3 matches
-    const top3 = cachedArr
-      .filter(j => j.analysis)
-      .sort((a, b) => (b.match_score ?? 0) - (a.match_score ?? 0))
-      .slice(0, 3);
-
-    const matchesSection = document.getElementById('dash-matches-section');
-    const matchesEl      = document.getElementById('dash-top-matches');
-
-    if (matchesSection && matchesEl) {
-      if (top3.length === 0) {
-        matchesSection.style.display = 'none';
-      } else {
-        matchesSection.style.display = '';
-        matchesEl.innerHTML = top3.map(j => {
-          const score    = j.match_score ?? 0;
-          const cls      = scoreBadgeClass(score);
-          const company  = j.site_name || 'Unknown';
-          const role     = j.job?.title || '—';
-          const strengths = (j.analysis?.strengths || []).slice(0, 2);
-          return `
-            <div class="dash-match-card">
-              <div class="dash-match-info">
-                <div class="dash-match-company">${esc(company)}</div>
-                <div class="dash-match-role">${esc(role)}</div>
-                ${strengths.length ? `
-                <div class="dash-match-tags">
-                  ${strengths.map(s => `<span class="tag">${esc(s.length > 32 ? s.slice(0,32)+'…' : s)}</span>`).join('')}
-                </div>` : ''}
-              </div>
-              <div class="dash-score-badge ${cls}">${score}</div>
-              <div class="dash-match-actions">
-                <a class="btn btn-primary btn-sm" href="${esc(j.job?.url || '#')}" target="_blank" rel="noopener">Apply Now</a>
-                <button class="btn btn-secondary btn-sm dash-view-detail-btn" data-url="${esc(j.job?.url || '')}">Details</button>
-              </div>
-            </div>`;
-        }).join('');
-      }
-    }
-
-    // Big scan button visibility
-    const dashScanBtn = document.getElementById('dash-scan-btn');
-    if (dashScanBtn) {
-      dashScanBtn.style.display = activeSites > 0 ? '' : 'none';
-      dashScanBtn.onclick = () => {
-        switchTab('feed');
-        setTimeout(() => document.getElementById('feed-scan-btn')?.click(), 150);
-      };
-    }
 
   } catch (e) {
     console.error('loadDashboard error:', e);
@@ -526,6 +495,9 @@ function setResumeBadge(badge, content, found) {
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
 function switchTab(tab) {
+  // Job Feed is merged into Dashboard — redirect any 'feed' navigation
+  if (tab === 'feed') tab = 'dashboard';
+
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
   // Sync mobile bottom nav
@@ -534,10 +506,10 @@ function switchTab(tab) {
   _mobileCloseSidebar();
   if (tab === 'history')   loadHistory();
   if (tab === 'observe')   loadObservability();
-  if (tab === 'feed')      refreshFeedTab();
   if (tab === 'profile')   loadProfileTab();
   if (tab === 'board')     loadBoard();
-  if (tab === 'dashboard') loadDashboard();
+  if (tab === 'assistant') loadChatHistory();
+  if (tab === 'dashboard') { loadDashboard(); refreshFeedTab(); }
 }
 
 function initTabs() {
@@ -1197,9 +1169,19 @@ async function loadHistory() {
             const s = e.score;
             const c = typeof s === 'number' ? scoreColor(s) : 'var(--text-muted)';
             const label = typeof s === 'number' ? scoreLabel(s) : '—';
+            let faviconDomain = '';
+            try { faviconDomain = new URL(e.url ?? '').hostname; } catch {}
+            const faviconSrc = faviconDomain
+              ? `https://www.google.com/s2/favicons?domain=${faviconDomain}&sz=32`
+              : '';
+            const faviconHTML = faviconSrc
+              ? `<img class="hist-logo-favicon" src="${esc(faviconSrc)}" alt="" width="20" height="20" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'hist-logo-dot'}))">`
+              : `<span class="hist-logo-dot"></span>`;
             return `<tr>
               <td style="white-space:nowrap;font-family:var(--mono)">${esc(e.date ?? '')}</td>
-              <td style="color:var(--text);font-family:var(--font);font-size:13px">${esc(e.title ?? '')}</td>
+              <td style="color:var(--text);font-family:var(--font);font-size:13px">
+                <span class="hist-logo-wrap">${faviconHTML}${esc(e.title ?? '')}</span>
+              </td>
               <td>
                 <span style="color:${c};font-weight:700;font-family:var(--mono)">${s ?? '—'}</span>
                 <span style="color:var(--text-muted);font-size:11px;margin-left:5px">${label}</span>
@@ -1228,6 +1210,68 @@ const BOARD_COLS = [
   { status: 'rejected',    label: 'Rejected',    color: '#EF4444' },
 ];
 
+// Columns expanded by default when in list / narrow-screen mode
+const BOARD_COLS_DEFAULT_OPEN = new Set(['interested', 'applied']);
+
+// ── Board view preference ─────────────────────────────────────────────────────
+
+const BOARD_VIEW_KEY = 'notchup_board_view'; // 'kanban' | 'list'
+const _narrowMQ = window.matchMedia('(max-width: 899px)');
+
+function _getBoardViewPref() {
+  return localStorage.getItem(BOARD_VIEW_KEY) || 'kanban';
+}
+function _setBoardViewPref(v) {
+  localStorage.setItem(BOARD_VIEW_KEY, v);
+}
+
+/**
+ * Returns true when the board should be in list mode —
+ * either because the screen is narrow (forced) or the user chose list view.
+ */
+function _isListMode() {
+  return _narrowMQ.matches || _getBoardViewPref() === 'list';
+}
+
+/**
+ * Apply/remove the list-mode class on the board element and sync the
+ * toggle button label to reflect the current effective mode.
+ */
+function _applyBoardViewMode() {
+  const board  = document.getElementById('kanban-board');
+  const label  = document.getElementById('board-view-toggle-label');
+  const btn    = document.getElementById('board-view-toggle');
+  if (!board) return;
+
+  const listMode = _isListMode();
+  board.classList.toggle('board-responsive-list-mode', listMode);
+
+  if (label) {
+    // The button switches to the opposite mode, so label says what you'll get
+    label.textContent = listMode ? 'Kanban' : 'List View';
+  }
+  if (btn) {
+    btn.title = listMode ? 'Switch to Kanban view' : 'Switch to List view';
+  }
+}
+
+/**
+ * Toggle collapse on a single column element (list/narrow mode only).
+ */
+function _toggleColCollapse(colEl) {
+  colEl.classList.toggle('board-responsive-collapsed');
+}
+
+/**
+ * Apply default expand/collapse state to all rendered columns.
+ */
+function _initCollapseStates(board) {
+  board.querySelectorAll('.kanban-col').forEach(colEl => {
+    const shouldExpand = BOARD_COLS_DEFAULT_OPEN.has(colEl.dataset.status);
+    colEl.classList.toggle('board-responsive-collapsed', !shouldExpand);
+  });
+}
+
 async function loadBoard() {
   if (!activeUserId) return;
   const apps = await api.get(`/api/applications?userId=${activeUserId}`);
@@ -1248,6 +1292,7 @@ function renderBoard(apps) {
         <div class="empty-board-sub">Apply to jobs from the feed to track them here</div>
         <button class="btn btn-primary empty-board-cta" data-tab="feed">Go to Feed</button>
       </div>`;
+    _applyBoardViewMode();
     return;
   }
 
@@ -1262,6 +1307,9 @@ function renderBoard(apps) {
         <span class="kanban-col-dot" style="background:${col.color}"></span>
         <span class="kanban-col-title">${col.label}</span>
         <span class="kanban-col-count" id="col-count-${col.status}">${colApps.length}</span>
+        <svg class="board-responsive-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
       </div>
       <div class="kanban-cards" id="col-${col.status}"></div>`;
 
@@ -1274,8 +1322,41 @@ function renderBoard(apps) {
         cardsEl.appendChild(buildKanbanCard(app, col.color));
       }
     }
+
+    // Attach collapse/expand handler — active only in list/narrow mode
+    colEl.querySelector('.kanban-col-header').addEventListener('click', () => {
+      if (_isListMode()) _toggleColCollapse(colEl);
+    });
+
     board.appendChild(colEl);
   }
+
+  // Apply list-mode class and set initial collapsed states
+  _applyBoardViewMode();
+  if (_isListMode()) _initCollapseStates(board);
+}
+
+// ── Board view toggle button (wide-screen manual switch) ──────────────────────
+
+function initBoardViewToggle() {
+  const toggleBtn = document.getElementById('board-view-toggle');
+  if (!toggleBtn) return;
+
+  toggleBtn.addEventListener('click', () => {
+    const next = _getBoardViewPref() === 'list' ? 'kanban' : 'list';
+    _setBoardViewPref(next);
+    _applyBoardViewMode();
+
+    const board = document.getElementById('kanban-board');
+    if (board && _isListMode()) _initCollapseStates(board);
+  });
+
+  // Re-evaluate when crossing the 899 px breakpoint
+  _narrowMQ.addEventListener('change', () => {
+    _applyBoardViewMode();
+    const board = document.getElementById('kanban-board');
+    if (board && _isListMode()) _initCollapseStates(board);
+  });
 }
 
 function buildKanbanCard(app, colColor) {
@@ -1915,7 +1996,7 @@ const WIZARD_CONTENT = [
     <div class="form-group">
       <label class="label">Anything else you'd like to share? <span class="label-hint">auto-fills open-ended application fields</span></label>
       <textarea id="wiz-additional-info" class="input" rows="3"
-        placeholder="E.g. I'm based in Puerto Rico, open to relocation, currently available full-time…"
+        placeholder="E.g. Open to remote or hybrid, available immediately, US work authorized…"
         style="resize:vertical">${esc(wizardData.additional_info)}</textarea>
     </div>`,
 ];
@@ -2061,6 +2142,8 @@ let feedResults      = [];   // { feedJob, fromCache } — accumulated across sc
 let feedSortBy       = 'score';
 let feedFilterText   = '';
 let feedScanController = null;  // AbortController for active scan
+let feedPage         = 1;
+let feedPageSize     = Number(localStorage.getItem('feedPageSize') ?? 20);
 
 function sortedFeedResults() {
   const copy = [...feedResults];
@@ -2078,22 +2161,554 @@ function sortedFeedResults() {
   return copy;
 }
 
-// Show/hide existing cards by filter text — no DOM rebuild, no animation replay.
-function applyFeedFilter() {
-  const q = feedFilterText.toLowerCase().trim();
-  let visible = 0;
-  document.querySelectorAll('#feed-results .feed-job-card-v2').forEach(card => {
-    const match = !q || (card.dataset.searchText ?? '').includes(q);
-    card.style.display = match ? '' : 'none';
-    if (match) visible++;
+// ── Dynamic Filter Panel ──────────────────────────────────────────────────────
+
+// Persisted filter state in sessionStorage
+const DFILTER_KEY = 'notchup_dfilter_state';
+
+// Active selections: { score: Set, company: Set, location: Set, department: Set, level: Set, skill: Set }
+let _dfilterState = _dfilterLoadState();
+
+function _dfilterLoadState() {
+  try {
+    const raw = sessionStorage.getItem(DFILTER_KEY);
+    if (!raw) return _dfilterEmptyState();
+    const parsed = JSON.parse(raw);
+    // Revive plain arrays back into Sets
+    const state = {};
+    for (const k of ['score', 'company', 'location', 'department', 'level', 'skill']) {
+      state[k] = new Set(Array.isArray(parsed[k]) ? parsed[k] : []);
+    }
+    return state;
+  } catch { return _dfilterEmptyState(); }
+}
+
+function _dfilterEmptyState() {
+  return { score: new Set(), company: new Set(), location: new Set(), department: new Set(), level: new Set(), skill: new Set() };
+}
+
+function _dfilterSaveState() {
+  try {
+    const plain = {};
+    for (const k of Object.keys(_dfilterState)) plain[k] = [..._dfilterState[k]];
+    sessionStorage.setItem(DFILTER_KEY, JSON.stringify(plain));
+  } catch {}
+}
+
+function _dfilterTotalActive() {
+  return Object.values(_dfilterState).reduce((n, s) => n + s.size, 0);
+}
+
+// Score range helper
+function _dfilterScoreRange(score) {
+  if (score >= 90) return 'excellent';
+  if (score >= 70) return 'strong';
+  if (score >= 50) return 'fair';
+  return 'low';
+}
+
+// Extract job level from title
+const _LEVEL_PATTERNS = [
+  { key: 'VP',        re: /\bVP\b|\bVice\s+President\b/i },
+  { key: 'Director',  re: /\bDirector\b/i },
+  { key: 'Manager',   re: /\bManager\b/i },
+  { key: 'Principal', re: /\bPrincipal\b/i },
+  { key: 'Staff',     re: /\bStaff\b/i },
+  { key: 'Lead',      re: /\bLead\b/i },
+  { key: 'Senior',    re: /\bSenior\b|\bSr\.?\b/i },
+  { key: 'Mid',       re: /\bMid[\s-]?level\b|\bMid\b/i },
+  { key: 'Junior',    re: /\bJunior\b|\bJr\.?\b/i },
+];
+
+function _dfilterExtractLevel(title) {
+  if (!title) return null;
+  for (const p of _LEVEL_PATTERNS) {
+    if (p.re.test(title)) return p.key;
+  }
+  return null;
+}
+
+// Normalize location to city only
+function _dfilterNormalizeLocation(loc) {
+  if (!loc) return null;
+  // Take the part before the first comma (city)
+  const city = loc.split(',')[0].trim();
+  if (!city || city.length < 2) return null;
+  // Collapse known remote variants
+  if (/remote|anywhere|worldwide|distributed/i.test(city)) return 'Remote';
+  return city;
+}
+
+/**
+ * Build filter data from feedResults.
+ * Returns { score, company, location, department, level, skill } maps of value → count.
+ */
+function _dfilterBuildData(results) {
+  const score      = { excellent: 0, strong: 0, fair: 0, low: 0 };
+  const companyMap = new Map();
+  const locationMap= new Map();
+  const deptMap    = new Map();
+  const levelMap   = new Map();
+  const skillMap   = new Map();
+
+  for (const { feedJob } of results) {
+    const s = feedJob.analysis?.match_score;
+    if (typeof s === 'number') {
+      score[_dfilterScoreRange(s)]++;
+    }
+
+    const company = (feedJob.site_name || '').trim();
+    if (company) companyMap.set(company, (companyMap.get(company) || 0) + 1);
+
+    const loc = _dfilterNormalizeLocation(feedJob.job?.location);
+    if (loc) locationMap.set(loc, (locationMap.get(loc) || 0) + 1);
+
+    const dept = (feedJob.job?.department || '').trim();
+    if (dept) deptMap.set(dept, (deptMap.get(dept) || 0) + 1);
+
+    const level = _dfilterExtractLevel(feedJob.job?.title);
+    if (level) levelMap.set(level, (levelMap.get(level) || 0) + 1);
+
+    const reqs = feedJob.analysis?.requirements || [];
+    for (const req of reqs) {
+      if (!req || req.length > 60) continue;
+      // Keep short tokens that look like skills (no full sentences)
+      const clean = req.trim();
+      if (clean.split(' ').length > 5) continue;
+      skillMap.set(clean, (skillMap.get(clean) || 0) + 1);
+    }
+  }
+
+  // Sort company by count, keep top 10
+  const company = new Map([...companyMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10));
+  // Sort location, top 8
+  const location = new Map([...locationMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8));
+  // All departments
+  const department = new Map([...deptMap.entries()].sort((a, b) => b[1] - a[1]));
+  // All levels that appear
+  const level = new Map([...levelMap.entries()].sort((a, b) => b[1] - a[1]));
+  // Top 12 skills
+  const skill = new Map([...skillMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12));
+
+  return { score, company, location, department, level, skill };
+}
+
+/**
+ * Test a single feedResult against current _dfilterState.
+ * Returns true if the job passes all active dimensions.
+ */
+function _dfilterMatchesResult({ feedJob }) {
+  const state = _dfilterState;
+
+  // Score dimension
+  if (state.score.size > 0) {
+    const s = feedJob.analysis?.match_score;
+    const range = typeof s === 'number' ? _dfilterScoreRange(s) : null;
+    if (!range || !state.score.has(range)) return false;
+  }
+
+  // Company dimension
+  if (state.company.size > 0) {
+    const company = (feedJob.site_name || '').trim();
+    if (!state.company.has(company)) return false;
+  }
+
+  // Location dimension
+  if (state.location.size > 0) {
+    const loc = _dfilterNormalizeLocation(feedJob.job?.location);
+    if (!loc || !state.location.has(loc)) return false;
+  }
+
+  // Department dimension
+  if (state.department.size > 0) {
+    const dept = (feedJob.job?.department || '').trim();
+    if (!state.department.has(dept)) return false;
+  }
+
+  // Level dimension
+  if (state.level.size > 0) {
+    const lvl = _dfilterExtractLevel(feedJob.job?.title);
+    if (!lvl || !state.level.has(lvl)) return false;
+  }
+
+  // Skills dimension (job must have at least one matching skill)
+  if (state.skill.size > 0) {
+    const reqs = feedJob.analysis?.requirements || [];
+    const reqSet = new Set(reqs.map(r => r?.trim()).filter(Boolean));
+    const hasMatch = [...state.skill].some(sk => reqSet.has(sk));
+    if (!hasMatch) return false;
+  }
+
+  return true;
+}
+
+/** Rebuild the filter panel DOM from current feedResults. */
+function buildDynamicFilters(results) {
+  const panel = document.getElementById('dfilter-panel');
+  if (!panel) return;
+
+  if (!results || results.length === 0) {
+    panel.innerHTML = '';
+    panel.classList.add('hidden');
+    _updateFilterBadge();
+    _renderFilterPills();
+    return;
+  }
+
+  const data = _dfilterBuildData(results);
+
+  const SCORE_META = [
+    { key: 'excellent', label: 'Excellent (90–100)', dotClass: 'dfilter-dot-excellent' },
+    { key: 'strong',    label: 'Strong (70–89)',     dotClass: 'dfilter-dot-strong' },
+    { key: 'fair',      label: 'Fair (50–69)',       dotClass: 'dfilter-dot-fair' },
+    { key: 'low',       label: 'Low (< 50)',         dotClass: 'dfilter-dot-low' },
+  ];
+
+  // Build sections config
+  const sections = [
+    {
+      dim: 'score',
+      title: 'Match Score',
+      chips: SCORE_META
+        .filter(m => data.score[m.key] > 0)
+        .map(m => ({ value: m.key, label: m.label, count: data.score[m.key], dotClass: m.dotClass })),
+    },
+    {
+      dim: 'company',
+      title: 'Company',
+      chips: [...data.company.entries()].map(([v, c]) => ({ value: v, label: v, count: c })),
+    },
+    {
+      dim: 'location',
+      title: 'Location',
+      chips: [...data.location.entries()].map(([v, c]) => ({ value: v, label: v, count: c })),
+    },
+    {
+      dim: 'department',
+      title: 'Department',
+      chips: [...data.department.entries()].map(([v, c]) => ({ value: v, label: v, count: c })),
+    },
+    {
+      dim: 'level',
+      title: 'Job Level',
+      chips: [...data.level.entries()].map(([v, c]) => ({ value: v, label: v, count: c })),
+    },
+    {
+      dim: 'skill',
+      title: 'Skills',
+      chips: [...data.skill.entries()].map(([v, c]) => ({ value: v, label: v, count: c })),
+    },
+  ].filter(s => s.chips.length > 0);
+
+  panel.innerHTML = '';
+
+  for (const sec of sections) {
+    const sectionEl = document.createElement('div');
+    sectionEl.className = 'dfilter-section';
+    sectionEl.dataset.dim = sec.dim;
+
+    const totalInDim = sec.chips.reduce((n, c) => n + c.count, 0);
+
+    sectionEl.innerHTML = `
+      <div class="dfilter-section-header">
+        <span class="dfilter-section-title">${esc(sec.title)}</span>
+        <span class="dfilter-section-count">${totalInDim}</span>
+        <svg class="dfilter-chevron" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="dfilter-section-body"></div>`;
+
+    const body = sectionEl.querySelector('.dfilter-section-body');
+
+    for (const chip of sec.chips) {
+      const btn = document.createElement('button');
+      btn.className = 'dfilter-chip' + (_dfilterState[sec.dim].has(chip.value) ? ' active' : '');
+      btn.dataset.dim   = sec.dim;
+      btn.dataset.value = chip.value;
+      btn.innerHTML = `${chip.dotClass ? `<span class="dfilter-chip-dot ${esc(chip.dotClass)}"></span>` : ''}
+        <span class="dfilter-chip-label">${esc(chip.label)}</span>
+        <span class="dfilter-chip-num">${chip.count}</span>`;
+      btn.addEventListener('click', () => _dfilterToggle(sec.dim, chip.value));
+      body.appendChild(btn);
+    }
+
+    // Simple toggle — no animation, no max-height, just show/hide
+    sectionEl.querySelector('.dfilter-section-header').addEventListener('click', () => {
+      sectionEl.classList.toggle('collapsed');
+    });
+
+    // Start fully expanded — no inline styles needed
+    panel.appendChild(sectionEl);
+  }
+
+  _updateFilterBadge();
+  _renderFilterPills();
+}
+
+/** Toggle a filter value and re-apply. */
+function _dfilterToggle(dim, value) {
+  const set = _dfilterState[dim];
+  if (set.has(value)) { set.delete(value); } else { set.add(value); }
+  _dfilterSaveState();
+  _updateFilterBadge();
+  _renderFilterPills();
+  _dfilterSyncChipActive();
+  _dfilterUpdateAdaptiveCounts(); // ← update other dimensions' counts
+  applyFeedFilter();
+}
+
+/** Sync the .active class on chips after a toggle. */
+function _dfilterSyncChipActive() {
+  document.querySelectorAll('#dfilter-panel .dfilter-chip').forEach(btn => {
+    const active = _dfilterState[btn.dataset.dim]?.has(btn.dataset.value);
+    btn.classList.toggle('active', !!active);
   });
-  const total = feedResults.length;
+}
+
+/**
+ * Adaptive faceted counts: for each dimension, recount using results that
+ * pass ALL other active dimensions (ignoring the dimension itself).
+ * Chips with 0 matching jobs are dimmed; counts update live.
+ */
+function _dfilterUpdateAdaptiveCounts() {
+  const dims = ['score','company','location','department','level','skill'];
+
+  dims.forEach(targetDim => {
+    // Results that match every dimension EXCEPT targetDim
+    const base = feedResults.filter(r => {
+      const { feedJob } = r;
+      for (const d of dims) {
+        if (d === targetDim) continue;
+        if (_dfilterState[d].size === 0) continue;
+        // Must match this dimension
+        if (!_dfilterMatchesDim(feedJob, d)) return false;
+      }
+      return true;
+    });
+
+    // Count per chip value within targetDim on that base set
+    const counts = new Map();
+    for (const { feedJob } of base) {
+      const vals = _dfilterGetDimValues(feedJob, targetDim);
+      for (const v of vals) counts.set(v, (counts.get(v) || 0) + 1);
+    }
+
+    // Update chip labels + dim/available state
+    document.querySelectorAll(`#dfilter-panel .dfilter-chip[data-dim="${targetDim}"]`).forEach(btn => {
+      const v   = btn.dataset.value;
+      const n   = counts.get(v) || 0;
+      const numEl = btn.querySelector('.dfilter-chip-num');
+      if (numEl) numEl.textContent = n;
+      btn.classList.toggle('dfilter-chip-zero', n === 0 && !_dfilterState[targetDim].has(v));
+    });
+  });
+}
+
+/** Get the dimension value(s) for a single job — mirrors _dfilterBuildData logic */
+function _dfilterGetDimValues(feedJob, dim) {
+  switch (dim) {
+    case 'score': {
+      const s = feedJob.analysis?.match_score;
+      return typeof s === 'number' ? [_dfilterScoreRange(s)] : [];
+    }
+    case 'company':    return feedJob.site_name ? [feedJob.site_name.trim()] : [];
+    case 'location':   { const l = _dfilterNormalizeLocation(feedJob.job?.location); return l ? [l] : []; }
+    case 'department': return feedJob.job?.department ? [feedJob.job.department.trim()] : [];
+    case 'level':      { const lv = _dfilterExtractLevel(feedJob.job?.title); return lv ? [lv] : []; }
+    case 'skill':      return (feedJob.analysis?.requirements || []).filter(r => r && r.split(' ').length <= 5);
+    default: return [];
+  }
+}
+
+/** Check if a job matches a single dimension's active filters */
+function _dfilterMatchesDim(feedJob, dim) {
+  const active = _dfilterState[dim];
+  if (!active || active.size === 0) return true;
+  const vals = _dfilterGetDimValues(feedJob, dim);
+  return vals.some(v => active.has(v));
+}
+
+/** Update the Filters button badge. */
+function _updateFilterBadge() {
+  const n = _dfilterTotalActive();
+  const badge = document.getElementById('dfilter-badge');
+  const clearBtn = document.getElementById('dfilter-clear-btn');
+  if (badge) {
+    badge.textContent = n;
+    badge.classList.toggle('hidden', n === 0);
+  }
+  if (clearBtn) clearBtn.classList.toggle('hidden', n === 0);
+}
+
+/** Render active filter pills above the feed. */
+function _renderFilterPills() {
+  const row = document.getElementById('dfilter-pills-row');
+  if (!row) return;
+  row.innerHTML = '';
+  const total = _dfilterTotalActive();
+  if (total === 0) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+
+  const DIM_LABELS = {
+    score: 'Score', company: 'Company', location: 'Location',
+    department: 'Dept', level: 'Level', skill: 'Skill',
+  };
+
+  for (const [dim, set] of Object.entries(_dfilterState)) {
+    for (const value of set) {
+      const pill = document.createElement('span');
+      pill.className = 'dfilter-pill';
+      pill.innerHTML = `<span>${esc(DIM_LABELS[dim] || dim)}: ${esc(value)}</span>
+        <button class="dfilter-pill-remove" title="Remove filter" aria-label="Remove ${esc(value)} filter">&times;</button>`;
+      pill.querySelector('.dfilter-pill-remove').addEventListener('click', () => _dfilterToggle(dim, value));
+      row.appendChild(pill);
+    }
+  }
+}
+
+/** Clear all dynamic filters. */
+function _dfilterClearAll() {
+  _dfilterState = _dfilterEmptyState();
+  _dfilterSaveState();
+  _updateFilterBadge();
+  _renderFilterPills();
+  _dfilterSyncChipActive();
+  applyFeedFilter();
+}
+
+/** Initialize Filters button + drawer behavior. Called from initFeedTab. */
+function _initDynamicFilterPanel() {
+  const openBtn   = document.getElementById('dfilter-open-btn');
+  const panel     = document.getElementById('dfilter-panel');
+  const backdrop  = document.getElementById('dfilter-backdrop');
+  const clearBtn  = document.getElementById('dfilter-clear-btn');
+
+  if (!openBtn || !panel) return;
+
+  openBtn.addEventListener('click', () => {
+    const isHidden = panel.classList.contains('hidden');
+    if (isHidden) {
+      panel.classList.remove('hidden');
+      // Rebuild filters NOW that the panel is visible — grid can calculate widths
+      buildDynamicFilters(feedResults);
+      requestAnimationFrame(() => panel.classList.add('dfilter-panel-open'));
+      if (backdrop) backdrop.classList.remove('hidden');
+    } else {
+      panel.classList.remove('dfilter-panel-open');
+      backdrop?.classList.add('hidden');
+      setTimeout(() => panel.classList.add('hidden'), 280);
+    }
+  });
+
+  backdrop?.addEventListener('click', () => {
+    panel.classList.remove('dfilter-panel-open');
+    backdrop.classList.add('hidden');
+    setTimeout(() => panel.classList.add('hidden'), 280);
+  });
+
+  clearBtn?.addEventListener('click', () => _dfilterClearAll());
+
+  // Re-apply any persisted filters on init (e.g. after tab switch)
+  _updateFilterBadge();
+  _renderFilterPills();
+}
+
+// Show/hide existing cards by filter text AND dynamic filters — no DOM rebuild.
+function getFilteredResults() {
+  const q = feedFilterText.toLowerCase().trim();
+  const hasDynFilter = _dfilterTotalActive() > 0;
+  return sortedFeedResults().filter(r => {
+    const card = document.querySelector(`[data-url="${CSS.escape(r.feedJob.job?.url ?? '')}"]`);
+    const searchText = card?.dataset.searchText ?? (r.feedJob.job?.title + ' ' + r.feedJob.site_name + ' ' + (r.feedJob.job?.location ?? '')).toLowerCase();
+    const textMatch = !q || searchText.includes(q);
+    const dynMatch = !hasDynFilter || _dfilterMatchesResult(r);
+    return textMatch && dynMatch;
+  });
+}
+
+function applyFeedFilter() {
+  const filtered = getFilteredResults();
+  const total    = feedResults.length;
+  const totalFiltered = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / feedPageSize));
+  if (feedPage > totalPages) feedPage = totalPages;
+
+  const start = (feedPage - 1) * feedPageSize;
+  const pageItems = filtered.slice(start, start + feedPageSize);
+  const pageUrls  = new Set(pageItems.map(r => r.feedJob.job?.url));
+
+  // Show/hide cards based on current page + filters
+  document.querySelectorAll('#feed-results .feed-job-card-v2').forEach(card => {
+    card.style.display = pageUrls.has(card.dataset.url) ? '' : 'none';
+  });
+
   const sortBar = document.getElementById('feed-sort-bar');
   const countEl = document.getElementById('feed-result-count');
   if (sortBar) sortBar.classList.toggle('hidden', total === 0);
-  if (countEl) countEl.textContent = visible < total
-    ? `${visible} of ${total} job${total !== 1 ? 's' : ''}`
-    : `${total} job${total !== 1 ? 's' : ''}`;
+
+  if (countEl) {
+    const from = totalFiltered === 0 ? 0 : start + 1;
+    const to   = Math.min(start + feedPageSize, totalFiltered);
+    countEl.textContent = totalFiltered < total
+      ? `${from}–${to} of ${totalFiltered} filtered (${total} total)`
+      : `${from}–${to} of ${total} job${total !== 1 ? 's' : ''}`;
+  }
+
+  renderPagination(totalFiltered, totalPages);
+}
+
+function renderPagination(totalFiltered, totalPages) {
+  let pager = document.getElementById('feed-pagination');
+  if (!pager) {
+    pager = document.createElement('div');
+    pager.id = 'feed-pagination';
+    document.getElementById('feed-results')?.after(pager);
+  }
+  if (totalFiltered === 0 || totalPages <= 1) { pager.innerHTML = ''; return; }
+
+  const prevDisabled = feedPage <= 1;
+  const nextDisabled = feedPage >= totalPages;
+  const pageSizeOptions = [10, 20, 50, 100].map(n =>
+    `<option value="${n}" ${n === feedPageSize ? 'selected' : ''}>${n} per page</option>`
+  ).join('');
+
+  // Page numbers: show up to 7 (with ellipsis)
+  const pages = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (feedPage > 3) pages.push('…');
+    for (let i = Math.max(2, feedPage - 1); i <= Math.min(totalPages - 1, feedPage + 1); i++) pages.push(i);
+    if (feedPage < totalPages - 2) pages.push('…');
+    pages.push(totalPages);
+  }
+
+  pager.innerHTML = `
+    <div class="feed-pager">
+      <button class="feed-pager-btn" id="feed-prev-btn" ${prevDisabled ? 'disabled' : ''}>← Prev</button>
+      <div class="feed-pager-pages">
+        ${pages.map(p => p === '…'
+          ? `<span class="feed-pager-ellipsis">…</span>`
+          : `<button class="feed-pager-page ${p === feedPage ? 'active' : ''}" data-page="${p}">${p}</button>`
+        ).join('')}
+      </div>
+      <button class="feed-pager-btn" id="feed-next-btn" ${nextDisabled ? 'disabled' : ''}>Next →</button>
+      <select class="feed-pager-size" id="feed-page-size-select">${pageSizeOptions}</select>
+    </div>`;
+
+  pager.querySelector('#feed-prev-btn')?.addEventListener('click', () => { feedPage--; applyFeedFilter(); pager.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); });
+  pager.querySelector('#feed-next-btn')?.addEventListener('click', () => { feedPage++; applyFeedFilter(); pager.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); });
+  pager.querySelectorAll('.feed-pager-page').forEach(btn => {
+    btn.addEventListener('click', () => { feedPage = Number(btn.dataset.page); applyFeedFilter(); });
+  });
+  pager.querySelector('#feed-page-size-select')?.addEventListener('change', e => {
+    feedPageSize = Number(e.target.value);
+    localStorage.setItem('feedPageSize', feedPageSize);
+    feedPage = 1;
+    applyFeedFilter();
+  });
 }
 
 // Append one card without rebuilding the list — used during live scans.
@@ -2101,7 +2716,17 @@ function appendFeedJobCard(feedJob, fromCache) {
   const resultsEl = document.getElementById('feed-results');
   if (!resultsEl) return;
   const card = buildFeedJobCard(feedJob, fromCache);
+  // Animate the new card in
+  card.classList.add('fc-card-new');
+  if (fromCache) {
+    card.classList.add('fc-card-from-cache');
+    // After a brief moment, fade it up to full opacity
+    setTimeout(() => card.classList.add('fc-cache-settled'), 50);
+  }
   resultsEl.appendChild(card);
+  // Debounce filter panel rebuilds during rapid scan events (max once per 400ms)
+  clearTimeout(appendFeedJobCard._filterTimer);
+  appendFeedJobCard._filterTimer = setTimeout(() => buildDynamicFilters(feedResults), 400);
   applyFeedFilter();
 }
 
@@ -2113,6 +2738,7 @@ function renderFeedResults() {
   for (const { feedJob, fromCache } of sortedFeedResults()) {
     resultsEl.appendChild(buildFeedJobCard(feedJob, fromCache));
   }
+  buildDynamicFilters(feedResults); // rebuild filter panel from current data
   applyFeedFilter(); // re-apply active filter to the freshly rendered cards
 }
 
@@ -2124,7 +2750,11 @@ async function refreshFeedTab() {
 
   if (activeUserId) {
     const user = await api.get(`/api/users/${activeUserId}`);
-    if (!user?.error) userInfo.textContent = `Scanning as: ${user.name}`;
+    if (!user?.error) {
+      userInfo.textContent = `Scanning as: ${user.name}`;
+      window._activeUserDbProfile = user;
+      _setDashGreeting(user.name); // use real DB name, not Supabase display name
+    }
 
     // Pre-load cached results so the user sees them immediately
     if (!resultsEl.dataset.scanActive && !feedResults.length) {
@@ -2162,7 +2792,7 @@ async function refreshFeedTab() {
       document.getElementById('feed-summary').innerHTML = `
         <div class="card" style="border-color:var(--border)">
           <div style="font-size:12px;color:var(--text-dim)">
-            ${count} cached result${count !== 1 ? 's' : ''} — click <strong>Start Scan</strong> to refresh
+            ${count} cached result${count !== 1 ? 's' : ''} — click <strong>Scan New Jobs</strong> to refresh
           </div>
         </div>`;
     } else if (!resultsEl.dataset.scanActive && !feedResults.length) {
@@ -2188,9 +2818,9 @@ function _showFeedEmptyState(container) {
     <div class="empty-state-wrap">
       <div class="empty-state-icon">🔍</div>
       <div class="empty-state-title">No jobs scanned yet</div>
-      <div class="empty-state-sub">Add job sites in Settings then hit Start Scan</div>
+      <div class="empty-state-sub">Add job sites in Settings then hit Scan New Jobs</div>
       <div class="empty-state-actions">
-        <button class="btn btn-primary" id="feed-empty-scan-btn">Start Scan</button>
+        <button class="btn btn-primary" id="feed-empty-scan-btn">Scan New Jobs</button>
         <button class="btn btn-secondary" data-tab="observe">Open Settings</button>
       </div>
     </div>`;
@@ -2244,24 +2874,27 @@ function initFeedTab() {
   reanalyzeAllBtn.addEventListener('click', async () => {
     if (!activeUserId) { toast('Select a profile first', 'error'); return; }
     if (!feedResults.length) { toast('No jobs in feed yet — run a scan first', 'error'); return; }
-    if (!confirm(`Re-analyze all ${feedResults.length} cached jobs? This will re-scrape and re-score each one.`)) return;
+    if (!confirm(`Re-score all ${feedResults.length} jobs against your current resume? This re-runs AI analysis on every cached job.`)) return;
     await startReanalyzeAll(activeUserId);
   });
 
   // Filter: show/hide existing cards — no rebuild
   filterInput?.addEventListener('input', () => {
-    feedFilterText = filterInput.value;
+    feedFilterText = filterInput.value; feedPage = 1;
     applyFeedFilter();
   });
 
   // Sort buttons
   document.querySelectorAll('.sort-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      feedSortBy = btn.dataset.sort;
+      feedSortBy = btn.dataset.sort; feedPage = 1;
       document.querySelectorAll('.sort-btn').forEach(b => b.classList.toggle('active', b === btn));
       renderFeedResults();
     });
   });
+
+  // Init dynamic filter panel
+  _initDynamicFilterPanel();
 }
 
 async function startFeedScan(userId) {
@@ -2284,6 +2917,9 @@ async function startFeedScan(userId) {
   resultsEl.dataset.scanActive = '1';
   fillEl.style.width = '0%';
   feedResults = [];
+
+  // Reset dynamic filters for new scan
+  buildDynamicFilters([]);
 
   // Show scan animation grid (clears previous cards)
   if (scanCardsEl) {
@@ -2324,6 +2960,13 @@ async function startFeedScan(userId) {
       }
       feedResults.push({ feedJob: evt.job, fromCache: !!evt.from_cache });
       appendFeedJobCard(evt.job, !!evt.from_cache);
+      // Update live summary count
+      const liveCount = feedResults.length;
+      summaryEl.classList.remove('hidden');
+      summaryEl.innerHTML = `
+        <div class="card" style="border-color:var(--border-soft)">
+          <div style="font-size:12px;color:var(--text-dim)">${liveCount} job${liveCount !== 1 ? 's' : ''} found so far…</div>
+        </div>`;
     } else if (evt.type === 'job_filtered') {
       skipped++;
     } else if (evt.type === 'site_error') {
@@ -2635,7 +3278,7 @@ function buildFeedJobCard(feedJob, fromCache = false) {
     img.width  = 32;
     img.height = 32;
     img.alt    = company || 'logo';
-    img.src    = `https://logo.clearbit.com/${logoDomain}`;
+    img.src    = `https://www.google.com/s2/favicons?domain=${logoDomain}&sz=64`;
     img.onerror = () => {
       img.replaceWith(fcInitialsCircle(initials, company));
     };
@@ -3464,7 +4107,7 @@ function _scanAnimUpsertCard(siteName, siteUrl, state, jobCount, _unused) {
   if (siteUrl) {
     try {
       const domain = new URL(siteUrl).hostname;
-      logoHTML = `<img src="https://logo.clearbit.com/${domain}" width="28" height="28" alt=""
+      logoHTML = `<img src="https://www.google.com/s2/favicons?domain=${domain}&sz=64" width="28" height="28" alt=""
         onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
         <span style="display:none;align-items:center;justify-content:center;width:100%;height:100%;font-size:13px;font-weight:700">${initials}</span>`;
     } catch {
@@ -3600,6 +4243,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { initWizardButtons(); } catch(e) { console.error('initWizardButtons:', e); }
   try { initFeedTab(); } catch(e) { console.error('initFeedTab:', e); }
   try { initProfileTab(); } catch(e) { console.error('initProfileTab:', e); }
+  try { initBoardViewToggle(); } catch(e) { console.error('initBoardViewToggle:', e); }
+  try { initChatTab(); } catch(e) { console.error('initChatTab:', e); }
 
   // Apply modal close button
   document.getElementById('apply-close-btn').addEventListener('click', () => {
@@ -3617,6 +4262,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (activeUserId) localStorage.setItem('activeUserId', String(activeUserId));
     showAppScreen();
     loadDashboard();
+    refreshFeedTab();
     if (window._loadResumeMaster) window._loadResumeMaster();
   } else {
     showLoginScreen();
@@ -3813,6 +4459,17 @@ async function loadObservability() {
         </div>
       </div>
       <div class="form-group" style="margin-top:14px">
+        <label class="label">Notification cooldown <span class="label-hint">minimum time between alerts — prevents notification spam during large scans</span></label>
+        <select id="alert-cooldown" class="input" style="max-width:180px;margin-top:4px">
+          <option value="0"    ${(settings.alert_cooldown_minutes || '0') === '0'    ? 'selected' : ''}>None</option>
+          <option value="30"   ${settings.alert_cooldown_minutes === '30'   ? 'selected' : ''}>30 minutes</option>
+          <option value="60"   ${settings.alert_cooldown_minutes === '60'   ? 'selected' : ''}>1 hour</option>
+          <option value="240"  ${settings.alert_cooldown_minutes === '240'  ? 'selected' : ''}>4 hours</option>
+          <option value="720"  ${settings.alert_cooldown_minutes === '720'  ? 'selected' : ''}>12 hours</option>
+          <option value="1440" ${settings.alert_cooldown_minutes === '1440' ? 'selected' : ''}>24 hours</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:14px">
         <label class="label">ntfy topic <span class="label-hint">just the topic name, e.g. <code style="font-family:var(--mono)">my-jobs</code></span></label>
         <input id="ntfy-topic" class="input" value="${esc(settings.ntfy_topic || '')}" placeholder="my-jobs" />
       </div>
@@ -3874,10 +4531,11 @@ async function loadObservability() {
     const status = settingsSection.querySelector('#ntfy-save-status');
     status.textContent = 'Saving…';
     await api.post('/api/settings', {
-      alert_enabled:    alertEnabled ? '1' : '0',
-      alert_threshold:  settingsSection.querySelector('#alert-threshold').value,
-      ntfy_topic:       settingsSection.querySelector('#ntfy-topic').value.trim(),
-      ntfy_server:      settingsSection.querySelector('#ntfy-server').value.trim(),
+      alert_enabled:           alertEnabled ? '1' : '0',
+      alert_threshold:         settingsSection.querySelector('#alert-threshold').value,
+      alert_cooldown_minutes:  settingsSection.querySelector('#alert-cooldown').value,
+      ntfy_topic:              settingsSection.querySelector('#ntfy-topic').value.trim(),
+      ntfy_server:             settingsSection.querySelector('#ntfy-server').value.trim(),
     });
     status.textContent = '✓ Saved';
     setTimeout(() => { status.textContent = ''; }, 2500);
@@ -4072,6 +4730,7 @@ function initCoverJobPicker() {
     const roleInput    = document.getElementById('cover-role');
     if (companyInput) companyInput.value = j.site_name || '';
     if (roleInput)    roleInput.value    = j.job?.title || '';
+    window._coverSelectedJobUrl = j.job?.url || null;
 
     // Visual confirmation
     const statusEl = document.getElementById('cover-job-picker-status');
@@ -4185,3 +4844,773 @@ switchTab = function(tab) {
     loadCoverFeedJobs();
   }
 };
+
+// ── Registration Onboarding Wizard ────────────────────────────────────────────
+// Fires once for brand-new users (no resume) after their first login.
+// Modal ID: #registration-onboard-modal   CSS prefix: .onboard-
+// Does NOT interfere with the existing #onboarding-modal (profile-creation wizard).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REG_ONBOARD_STEPS = 3;
+
+const _regOnboard = {
+  step: 1,
+  // Step 1 state
+  resumeUploaded: false,
+  resumeFile: null,
+  // Step 2 state
+  prefs: {
+    workType:   null,   // 'remote'|'hybrid'|'on-site'|'any'
+    expLevel:   null,   // 'junior'|'mid'|'senior'|'lead'
+    relocation: null,   // 'yes'|'no'
+    salary:     null,   // '0'|'80k'|'100k'|'120k'|'150k+'
+  },
+  // Step 3 state
+  selectedSites: new Set(),   // set of preset site keys
+  linkedinUrl: '',
+  customUrl: '',
+  // Preset companies for step 3
+  presets: [
+    { key: 'stripe',  name: 'Stripe',  ats: 'greenhouse', slug: 'stripe',  domain: 'stripe.com' },
+    { key: 'linear',  name: 'Linear',  ats: 'ashby',      slug: 'linear',  domain: 'linear.app' },
+    { key: 'vercel',  name: 'Vercel',  ats: 'greenhouse', slug: 'vercel',  domain: 'vercel.com' },
+    { key: 'bold',    name: 'BOLD',    ats: 'greenhouse', slug: 'bold',    domain: 'bold.com' },
+  ],
+};
+
+function showRegistrationOnboarding(userName, userEmail) {
+  const modal = document.getElementById('registration-onboard-modal');
+  if (!modal) return;
+  _regOnboard.step = 1;
+  _regOnboard.resumeUploaded = false;
+  _regOnboard.resumeFile = null;
+  _regOnboard.prefs = { workType: null, expLevel: null, relocation: null, salary: null };
+  _regOnboard.selectedSites = new Set();
+  _regOnboard.linkedinUrl = '';
+  _regOnboard.customUrl = '';
+  modal.style.display = 'flex';
+  _regOnboardRender();
+  _regOnboardInitNav();
+}
+
+function _closeRegistrationOnboarding() {
+  const modal = document.getElementById('registration-onboard-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function _regOnboardRender() {
+  _regOnboardRenderDots();
+  _regOnboardRenderBody();
+  _regOnboardUpdateNav();
+}
+
+function _regOnboardRenderDots() {
+  const el = document.getElementById('onboard-dots');
+  if (!el) return;
+  el.innerHTML = Array.from({ length: REG_ONBOARD_STEPS }, (_, i) => {
+    const n = i + 1;
+    const cls = n < _regOnboard.step ? 'onboard-dot done' : n === _regOnboard.step ? 'onboard-dot active' : 'onboard-dot';
+    return `<div class="${cls}" aria-label="Step ${n}${n < _regOnboard.step ? ' complete' : n === _regOnboard.step ? ' current' : ''}"></div>`;
+  }).join('');
+}
+
+function _regOnboardRenderBody() {
+  const body = document.getElementById('onboard-body');
+  if (!body) return;
+  if (_regOnboard.step === 1) body.innerHTML = _regOnboardStep1HTML();
+  if (_regOnboard.step === 2) body.innerHTML = _regOnboardStep2HTML();
+  if (_regOnboard.step === 3) body.innerHTML = _regOnboardStep3HTML();
+  // Wire interactive elements after render
+  if (_regOnboard.step === 1) _regOnboardWireStep1();
+  if (_regOnboard.step === 2) _regOnboardWireStep2();
+  if (_regOnboard.step === 3) _regOnboardWireStep3();
+}
+
+function _regOnboardUpdateNav() {
+  const backBtn = document.getElementById('onboard-back-btn');
+  const nextBtn = document.getElementById('onboard-next-btn');
+  const skipBtn = document.getElementById('onboard-skip-all-btn');
+  if (!backBtn || !nextBtn) return;
+
+  backBtn.style.visibility = _regOnboard.step === 1 ? 'hidden' : '';
+
+  const isLast = _regOnboard.step === REG_ONBOARD_STEPS;
+  nextBtn.textContent = isLast ? 'Start Scanning' : 'Next →';
+  if (skipBtn) skipBtn.textContent = isLast ? 'Skip & finish' : 'Skip step';
+
+  // Next is always enabled — every step is optional
+  nextBtn.disabled = false;
+}
+
+function _regOnboardInitNav() {
+  const backBtn = document.getElementById('onboard-back-btn');
+  const nextBtn = document.getElementById('onboard-next-btn');
+  const skipAll = document.getElementById('onboard-skip-all-btn');
+
+  if (backBtn) {
+    backBtn.onclick = () => {
+      if (_regOnboard.step > 1) {
+        _regOnboard.step--;
+        _regOnboardRender();
+      }
+    };
+  }
+
+  if (nextBtn) {
+    nextBtn.onclick = async () => {
+      await _regOnboardNext();
+    };
+  }
+
+  if (skipAll) {
+    skipAll.onclick = async () => {
+      // Skip = advance to next step; on last step = close wizard
+      if (_regOnboard.step < REG_ONBOARD_STEPS) {
+        _regOnboard.step++;
+        _regOnboardRender();
+      } else {
+        _closeRegistrationOnboarding();
+      }
+    };
+  }
+}
+
+async function _regOnboardNext() {
+  const nextBtn = document.getElementById('onboard-next-btn');
+  if (!nextBtn) return;
+
+  if (_regOnboard.step < REG_ONBOARD_STEPS) {
+    // Save current step data then advance
+    if (_regOnboard.step === 2) await _regOnboardSavePrefs();
+    _regOnboard.step++;
+    _regOnboardRender();
+  } else {
+    // Final step — save and close
+    nextBtn.disabled = true;
+    nextBtn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await _regOnboardFinish();
+    } finally {
+      nextBtn.disabled = false;
+      nextBtn.textContent = 'Start Scanning';
+    }
+  }
+}
+
+// ── Step 1: Resume Upload ────────────────────────────────────────────────────
+
+function _regOnboardStep1HTML() {
+  const uploaded = _regOnboard.resumeUploaded;
+  return `
+    <div class="onboard-title" id="onboard-modal-title">Let's start with your resume</div>
+    <div class="onboard-sub">Upload your resume so we can score every job against your profile. PDF, DOCX, or TXT — up to 10 MB.</div>
+    <div class="onboard-drop-zone${uploaded ? ' onboard-uploaded' : ''}" id="onboard-drop-zone" tabindex="0" role="button" aria-label="Upload resume file">
+      <div class="onboard-drop-icon">
+        ${uploaded
+          ? `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+          : `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`
+        }
+      </div>
+      <div class="onboard-drop-title">${uploaded ? 'Resume uploaded!' : 'Drop your resume here'}</div>
+      <div class="onboard-drop-hint">${uploaded
+        ? (typeof _regOnboard.resumeFile?.name === 'string' ? esc(_regOnboard.resumeFile.name) : 'File ready')
+        : 'PDF &middot; DOCX &middot; TXT'}</div>
+      ${!uploaded ? `<button class="btn btn-secondary btn-sm" id="onboard-browse-btn" style="margin-top:12px" type="button">Browse files</button>` : ''}
+    </div>
+    <input type="file" id="onboard-file-input" accept=".pdf,.docx,.txt" hidden />
+    <div class="onboard-upload-status" id="onboard-upload-status"></div>
+    <button class="onboard-skip-link" id="onboard-step1-skip" type="button">Skip for now</button>`;
+}
+
+function _regOnboardWireStep1() {
+  const dropZone  = document.getElementById('onboard-drop-zone');
+  const fileInput = document.getElementById('onboard-file-input');
+  const browseBtn = document.getElementById('onboard-browse-btn');
+  const skipLink  = document.getElementById('onboard-step1-skip');
+  const statusEl  = document.getElementById('onboard-upload-status');
+
+  if (browseBtn) browseBtn.addEventListener('click', e => { e.stopPropagation(); fileInput?.click(); });
+  if (dropZone)  dropZone.addEventListener('click', () => { if (!_regOnboard.resumeUploaded) fileInput?.click(); });
+  if (dropZone)  dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput?.click(); });
+
+  if (dropZone) {
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('onboard-drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('onboard-drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('onboard-drag-over');
+      const file = e.dataTransfer?.files?.[0];
+      if (file) _regOnboardHandleResumeFile(file, statusEl);
+    });
+  }
+
+  if (fileInput) {
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files?.[0];
+      if (file) _regOnboardHandleResumeFile(file, statusEl);
+    });
+  }
+
+  if (skipLink) {
+    skipLink.addEventListener('click', () => {
+      _regOnboard.step++;
+      _regOnboardRender();
+    });
+  }
+}
+
+async function _regOnboardHandleResumeFile(file, statusEl) {
+  if (!file) return;
+  const allowed = ['.pdf', '.docx', '.txt'];
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!allowed.includes(ext)) {
+    if (statusEl) statusEl.textContent = 'Only PDF, DOCX, or TXT files are accepted.';
+    return;
+  }
+
+  _regOnboard.resumeFile = file;
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Uploading…';
+
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    if (activeUserId) form.append('userId', String(activeUserId));
+
+    const token = await getAccessToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res  = await fetch('/api/resume/merge', { method: 'POST', headers, body: form });
+    const data = await res.json();
+
+    if (data.error) throw new Error(data.error);
+
+    _regOnboard.resumeUploaded = true;
+    if (statusEl) statusEl.textContent = '';
+
+    // Re-render the drop zone in-place without full step re-render
+    _regOnboardRenderBody();
+
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Upload failed: ' + (e.message || 'unknown error');
+  }
+}
+
+// ── Step 2: Preferences ──────────────────────────────────────────────────────
+
+function _regOnboardPillGroupHTML(groupKey, options) {
+  return `<div class="onboard-pills" data-group="${groupKey}">` +
+    options.map(o => {
+      const selected = _regOnboard.prefs[groupKey] === o.value;
+      return `<button class="onboard-pill${selected ? ' selected' : ''}" data-group="${groupKey}" data-value="${esc(o.value)}" type="button">${esc(o.label)}</button>`;
+    }).join('') +
+    `</div>`;
+}
+
+function _regOnboardStep2HTML() {
+  return `
+    <div class="onboard-title">What are you looking for?</div>
+    <div class="onboard-sub">These preferences filter your job feed. All optional — you can change them later in Profile.</div>
+
+    <div class="onboard-pref-group">
+      <div class="onboard-pref-label">Work type</div>
+      ${_regOnboardPillGroupHTML('workType', [
+        { value: 'remote',   label: 'Remote'   },
+        { value: 'hybrid',   label: 'Hybrid'   },
+        { value: 'on-site',  label: 'On-site'  },
+        { value: 'any',      label: 'Any'       },
+      ])}
+    </div>
+
+    <div class="onboard-pref-group">
+      <div class="onboard-pref-label">Experience level</div>
+      ${_regOnboardPillGroupHTML('expLevel', [
+        { value: 'junior', label: 'Junior' },
+        { value: 'mid',    label: 'Mid'    },
+        { value: 'senior', label: 'Senior' },
+        { value: 'lead',   label: 'Lead'   },
+      ])}
+    </div>
+
+    <div class="onboard-pref-group">
+      <div class="onboard-pref-label">Open to relocation?</div>
+      ${_regOnboardPillGroupHTML('relocation', [
+        { value: 'yes', label: 'Yes' },
+        { value: 'no',  label: 'No'  },
+      ])}
+    </div>
+
+    <div class="onboard-pref-group">
+      <div class="onboard-pref-label">Minimum salary</div>
+      ${_regOnboardPillGroupHTML('salary', [
+        { value: '0',    label: 'Any'   },
+        { value: '80',   label: '$80k'  },
+        { value: '100',  label: '$100k' },
+        { value: '120',  label: '$120k' },
+        { value: '150',  label: '$150k+' },
+      ])}
+    </div>`;
+}
+
+function _regOnboardWireStep2() {
+  document.querySelectorAll('#onboard-body .onboard-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const group = btn.dataset.group;
+      const value = btn.dataset.value;
+      _regOnboard.prefs[group] = value;
+      // Update UI
+      document.querySelectorAll(`#onboard-body .onboard-pill[data-group="${group}"]`).forEach(b => {
+        b.classList.toggle('selected', b.dataset.value === value);
+      });
+    });
+  });
+}
+
+async function _regOnboardSavePrefs() {
+  if (!activeUserId) return;
+  const { workType, expLevel, salary } = _regOnboard.prefs;
+  const prefs = {};
+  if (workType) prefs.work_type = workType;
+  if (expLevel) prefs.exp_level = expLevel;
+  if (salary !== null) prefs.salary_min = salary === '0' ? 0 : parseInt(salary, 10);
+
+  try {
+    await authFetch(`/api/users/${activeUserId}/preferences`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(prefs),
+    });
+  } catch (e) {
+    console.warn('Failed to save preferences:', e);
+  }
+}
+
+// ── Step 3: Job Sources ──────────────────────────────────────────────────────
+
+function _regOnboardSourceCardHTML(preset) {
+  const sel = _regOnboard.selectedSites.has(preset.key);
+  return `
+    <button class="onboard-source-card${sel ? ' selected' : ''}" data-preset-key="${preset.key}" type="button">
+      <img class="onboard-source-logo"
+           src="https://www.google.com/s2/favicons?domain=${preset.domain}&sz=64"
+           alt="${esc(preset.name)}"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+      />
+      <div class="onboard-source-logo-fallback" style="display:none">${esc(preset.name.slice(0,2).toUpperCase())}</div>
+      <div class="onboard-source-info">
+        <div class="onboard-source-name">${esc(preset.name)}</div>
+        <div class="onboard-source-type">${esc(preset.ats)}</div>
+      </div>
+      <svg class="onboard-check-mark" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </button>`;
+}
+
+function _regOnboardStep3HTML() {
+  return `
+    <div class="onboard-title">Where should we look for jobs?</div>
+    <div class="onboard-sub">Pick popular companies or add your own sources. You can always add more in Settings.</div>
+
+    <div class="onboard-source-grid" id="onboard-source-grid">
+      ${_regOnboard.presets.map(_regOnboardSourceCardHTML).join('')}
+    </div>
+
+    <div class="onboard-url-inputs">
+      <div>
+        <div class="onboard-url-label">Paste a LinkedIn job search URL</div>
+        <input class="input" id="onboard-linkedin-url" type="url"
+               placeholder="https://www.linkedin.com/jobs/search/?keywords=…"
+               value="${esc(_regOnboard.linkedinUrl)}" />
+      </div>
+      <div>
+        <div class="onboard-url-label">Custom company careers URL</div>
+        <input class="input" id="onboard-custom-url" type="url"
+               placeholder="https://company.com/careers"
+               value="${esc(_regOnboard.customUrl)}" />
+      </div>
+    </div>`;
+}
+
+function _regOnboardWireStep3() {
+  document.querySelectorAll('#onboard-body .onboard-source-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const key = card.dataset.presetKey;
+      if (_regOnboard.selectedSites.has(key)) {
+        _regOnboard.selectedSites.delete(key);
+        card.classList.remove('selected');
+      } else {
+        _regOnboard.selectedSites.add(key);
+        card.classList.add('selected');
+      }
+    });
+  });
+
+  const liInput = document.getElementById('onboard-linkedin-url');
+  const cuInput = document.getElementById('onboard-custom-url');
+  if (liInput) liInput.addEventListener('input', () => { _regOnboard.linkedinUrl = liInput.value; });
+  if (cuInput) cuInput.addEventListener('input', () => { _regOnboard.customUrl = cuInput.value; });
+}
+
+// ── Finish ────────────────────────────────────────────────────────────────────
+
+async function _regOnboardFinish() {
+  // Snapshot URL inputs before closing
+  const liUrl = document.getElementById('onboard-linkedin-url')?.value?.trim() || _regOnboard.linkedinUrl;
+  const cuUrl = document.getElementById('onboard-custom-url')?.value?.trim()  || _regOnboard.customUrl;
+
+  const addedSites = [];
+
+  // Save preset sites
+  for (const key of _regOnboard.selectedSites) {
+    const preset = _regOnboard.presets.find(p => p.key === key);
+    if (!preset) continue;
+    try {
+      await api.post('/api/sites', {
+        name:     preset.name,
+        url:      `https://${preset.domain}/careers`,
+        ats_type: preset.ats,
+        ats_slug: preset.slug,
+      });
+      addedSites.push(preset.name);
+    } catch (e) {
+      console.warn('Failed to add site:', preset.name, e);
+    }
+  }
+
+  // Save LinkedIn URL
+  if (liUrl) {
+    try {
+      await api.post('/api/sites', {
+        name: 'LinkedIn Search',
+        url:  liUrl,
+      });
+      addedSites.push('LinkedIn');
+    } catch (e) {
+      console.warn('Failed to add LinkedIn URL:', e);
+    }
+  }
+
+  // Save custom URL
+  if (cuUrl) {
+    try {
+      const hostname = (() => { try { return new URL(cuUrl).hostname; } catch { return cuUrl; } })();
+      await api.post('/api/sites', {
+        name: hostname,
+        url:  cuUrl,
+      });
+      addedSites.push(hostname);
+    } catch (e) {
+      console.warn('Failed to add custom URL:', e);
+    }
+  }
+
+  // Close the wizard
+  _closeRegistrationOnboarding();
+
+  // Confetti + toast
+  _regOnboardConfetti();
+  toast('You\'re all set! Welcome to NotchUp.');
+
+  // Reload dashboard to reflect new data
+  loadDashboard();
+  if (window._loadResumeMaster) window._loadResumeMaster();
+
+  // If sites were added, auto-trigger a scan after a short delay
+  if (addedSites.length > 0) {
+    setTimeout(() => {
+      switchTab('feed');
+      setTimeout(() => document.getElementById('feed-scan-btn')?.click(), 300);
+    }, 1200);
+  }
+}
+
+// ── Confetti ──────────────────────────────────────────────────────────────────
+
+function _regOnboardConfetti() {
+  const colors = ['#6366F1', '#10B981', '#F59E0B', '#EC4899', '#A5B4FC', '#34D399'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'onboard-confetti-piece';
+    piece.style.cssText = [
+      `left:${Math.random() * 100}vw`,
+      `background:${colors[Math.floor(Math.random() * colors.length)]}`,
+      `width:${6 + Math.random() * 6}px`,
+      `height:${6 + Math.random() * 6}px`,
+      `animation-duration:${1.8 + Math.random() * 1.6}s`,
+      `animation-delay:${Math.random() * 0.6}s`,
+      `border-radius:${Math.random() > 0.5 ? '50%' : '2px'}`,
+    ].join(';');
+    document.body.appendChild(piece);
+    setTimeout(() => piece.remove(), 3500);
+  }
+}
+
+// ── AI Assistant Chat ─────────────────────────────────────────────────────────
+
+const CHAT_SUGGESTIONS = [
+  'How can I improve my resume?',
+  'What interview questions should I prepare for?',
+  'Help me negotiate salary for my top match',
+  'Write a cover letter for my best match',
+];
+
+function _chatMd(text) {
+  return esc(text)
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/`([^`\n]+)`/g, '<code style="background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:0.88em;font-family:var(--mono)">$1</code>')
+    .replace(/^#{1,3} (.+)$/gm, '<strong>$1</strong>')
+    .replace(/^[-•] (.+)$/gm, '<div style="padding-left:14px;margin:2px 0">• $1</div>')
+    .replace(/^\d+\. (.+)$/gm, '<div style="padding-left:14px;margin:2px 0">$1</div>')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
+function _chatTimeAgo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.replace(' ', 'T') + 'Z');
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (isNaN(s) || s < 5)  return 'just now';
+  if (s < 60)   return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function _chatUserInitials() {
+  const name = window._activeUserDbProfile?.name || '';
+  if (name) return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  // Fallback: sidebar may show Supabase display name — skip if it looks like an email username
+  const sidebar = document.getElementById('sidebar-user-name')?.textContent?.trim() || '';
+  const clean = sidebar.replace(/\d+/g, '').trim(); // strip numbers (e.g. "carlos199730" → "carlos")
+  return clean.slice(0, 2).toUpperCase() || '?';
+}
+
+function _chatUserFirstName() {
+  const name = window._activeUserDbProfile?.name || '';
+  return name.split(' ')[0] || 'You';
+}
+
+function _chatRenderMsg(role, content, time) {
+  const isUser = role === 'user';
+  const firstName = _chatUserFirstName();
+  const avatar = isUser
+    ? `<div class="chat-avatar" title="${esc(firstName)}">${_chatUserInitials()}</div>`
+    : `<div class="chat-avatar" title="AI Assistant">✦</div>`;
+  const bubbleContent = isUser ? esc(content) : _chatMd(content);
+  const timeStr = time ? `<div class="chat-msg-time">${_chatTimeAgo(time)}</div>` : '';
+  return `
+    ${avatar}
+    <div class="chat-msg-content">
+      <div class="chat-msg-bubble">${bubbleContent}</div>
+      ${timeStr}
+    </div>`;
+}
+
+function _chatShowEmpty(msgsEl) {
+  const chips = CHAT_SUGGESTIONS.map(s =>
+    `<button class="chat-chip" data-suggestion="${esc(s)}">${esc(s)}</button>`
+  ).join('');
+  msgsEl.innerHTML = `
+    <div class="chat-empty-state">
+      <div class="chat-empty-icon">✦</div>
+      <div class="chat-empty-title">Your AI Career Coach</div>
+      <div class="chat-empty-hint">Ask about your resume, job matches, interviews, or salary negotiation.</div>
+      <div class="chat-suggestions">${chips}</div>
+    </div>`;
+  msgsEl.querySelectorAll('.chat-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const input = document.getElementById('chat-input');
+      if (input) { input.value = chip.dataset.suggestion; input.focus(); }
+    });
+  });
+}
+
+function _chatUpdateQuota(quota) {
+  if (!quota) return;
+  const pct    = Math.round((quota.remaining / quota.limit) * 100);
+  const fill   = document.getElementById('chat-quota-fill');
+  const label  = document.getElementById('chat-quota-label');
+  const count  = document.getElementById('chat-quota-count');
+  if (fill) {
+    fill.style.width = `${pct}%`;
+    fill.className = 'chat-quota-fill' + (pct < 20 ? ' red' : pct < 50 ? ' amber' : '');
+  }
+  if (label) {
+    const used = quota.used.toLocaleString();
+    const lim  = quota.limit.toLocaleString();
+    label.textContent = `${used} / ${lim} tokens used`;
+  }
+  if (count) {
+    const rem = quota.remaining.toLocaleString();
+    count.textContent = `${rem} remaining`;
+    count.style.color = pct < 20 ? 'var(--danger)' : pct < 50 ? 'var(--warning)' : '';
+  }
+}
+
+async function loadChatHistory() {
+  if (!activeUserId) return;
+  const msgsEl = document.getElementById('chat-messages');
+  if (!msgsEl) return;
+
+  // Ensure DB profile is cached so the avatar shows the real name
+  if (!window._activeUserDbProfile) {
+    api.get(`/api/users/${activeUserId}`).then(u => { if (!u?.error) window._activeUserDbProfile = u; }).catch(() => {});
+  }
+
+  // Load quota
+  api.get(`/api/chat/quota?userId=${activeUserId}`).then(_chatUpdateQuota).catch(() => {});
+
+  if (msgsEl.dataset.loaded === '1') return;
+  msgsEl.dataset.loaded = '1';
+
+  try {
+    const data = await api.get(`/api/chat/history?userId=${activeUserId}`);
+    const messages = data?.messages || [];
+    msgsEl.innerHTML = '';
+    if (!messages.length) {
+      _chatShowEmpty(msgsEl);
+      return;
+    }
+    messages.forEach(m => {
+      const div = document.createElement('div');
+      div.className = `chat-msg chat-msg--${m.role}`;
+      div.innerHTML = _chatRenderMsg(m.role, m.content, m.created_at);
+      msgsEl.appendChild(div);
+    });
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  } catch (e) {
+    console.error('loadChatHistory:', e);
+  }
+}
+
+function initChatTab() {
+  const sendBtn  = document.getElementById('chat-send-btn');
+  const input    = document.getElementById('chat-input');
+  const clearBtn = document.getElementById('chat-clear-btn');
+  const msgsEl   = document.getElementById('chat-messages');
+  if (!sendBtn || !input || !msgsEl) return;
+
+  // Auto-resize textarea as user types
+  function _resizeInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+  }
+  input.addEventListener('input', _resizeInput);
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text) return;
+    if (!activeUserId) { toast('Sign in first', 'error'); return; }
+
+    input.value = '';
+    _resizeInput();
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    // Remove empty state
+    msgsEl.querySelector('.chat-empty-state')?.remove();
+    msgsEl.dataset.loaded = '1';
+
+    // Append user message
+    const userDiv = document.createElement('div');
+    userDiv.className = 'chat-msg chat-msg--user';
+    userDiv.innerHTML = _chatRenderMsg('user', text, null);
+    msgsEl.appendChild(userDiv);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+
+    // Typing indicator
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'chat-msg chat-msg--assistant chat-typing';
+    typingDiv.innerHTML = `
+      <div class="chat-avatar">✦</div>
+      <div class="chat-msg-content">
+        <div class="chat-msg-bubble">
+          <div class="chat-dots">
+            <div class="chat-dot"></div>
+            <div class="chat-dot"></div>
+            <div class="chat-dot"></div>
+          </div>
+        </div>
+      </div>`;
+    msgsEl.appendChild(typingDiv);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+
+    let fullText = '';
+    let bubble = null;
+
+    try {
+      const response = await authFetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: activeUserId, message: text }),
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      // Replace typing indicator with real assistant bubble
+      typingDiv.className = 'chat-msg chat-msg--assistant';
+      typingDiv.innerHTML = `
+        <div class="chat-avatar">✦</div>
+        <div class="chat-msg-content">
+          <div class="chat-msg-bubble"></div>
+          <div class="chat-msg-time">just now</div>
+        </div>`;
+      bubble = typingDiv.querySelector('.chat-msg-bubble');
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.text) {
+              fullText += data.text;
+              bubble.innerHTML = _chatMd(fullText);
+              msgsEl.scrollTop = msgsEl.scrollHeight;
+            }
+            if (data.quota) _chatUpdateQuota(data.quota);
+            if (data.error) throw new Error(data.error);
+          } catch (parseErr) {
+            if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
+          }
+        }
+      }
+    } catch (e) {
+      typingDiv.remove();
+      const errDiv = document.createElement('div');
+      errDiv.className = 'chat-msg chat-msg--assistant';
+      const errMsg = e.message || 'Failed to get a response.';
+      errDiv.innerHTML = `
+        <div class="chat-avatar">✦</div>
+        <div class="chat-msg-content">
+          <div class="chat-msg-bubble" style="border-color:var(--danger-soft,#f87171);color:var(--danger)">⚠ ${esc(errMsg)}</div>
+        </div>`;
+      msgsEl.appendChild(errDiv);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  clearBtn?.addEventListener('click', async () => {
+    if (!activeUserId || !confirm('Clear chat history? This cannot be undone.')) return;
+    await api.delete(`/api/chat/history?userId=${activeUserId}`);
+    msgsEl.innerHTML = '';
+    msgsEl.dataset.loaded = '1';
+    _chatShowEmpty(msgsEl);
+  });
+}

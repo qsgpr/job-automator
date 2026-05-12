@@ -20,6 +20,7 @@ import { generateCoverLetterFromAnalysis, validateCoverLetter, saveCoverLetter, 
 import { getCachedCompanyProfile, upsertCompanyProfile, listCompanyProfiles } from './profiles.js';
 import { authMiddleware, handleRegister } from './auth.js';
 import { seedDemoUser } from './seed.js';
+import { streamChatResponse, getChatHistory, clearChatHistory, getChatQuota } from './chat.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -1227,6 +1228,62 @@ app.get('/api/research/company/:name', (req, res) => {
     is_fresh: isFresh,
     cache_expires_at: profile.cache_expires_at,
   });
+});
+
+// ── AI Chat ───────────────────────────────────────────────────────────────────
+
+app.post('/api/chat', async (req, res) => {
+  const { userId, message } = req.body as { userId: number; message: string };
+  if (!userId || !message?.trim()) {
+    res.status(400).json({ error: 'userId and message required' });
+    return;
+  }
+
+  const user = db.prepare('SELECT name, resume_text FROM users WHERE id = ?').get(userId) as any;
+  if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+
+  const topJobs = db.prepare(`
+    SELECT job_title, match_score, analysis_json, job_url
+    FROM feed_jobs
+    WHERE user_id = ? AND analysis_json IS NOT NULL
+    ORDER BY match_score DESC
+    LIMIT 15
+  `).all(userId) as Array<{ job_title: string; match_score: number; analysis_json: string; job_url: string }>;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const emit = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    for await (const chunk of streamChatResponse(userId, message, user.name, user.resume_text || '', topJobs)) {
+      emit({ text: chunk });
+    }
+    emit({ done: true, quota: getChatQuota(userId) });
+  } catch (e) {
+    emit({ error: String(e) });
+  }
+  res.end();
+});
+
+app.get('/api/chat/quota', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  res.json(getChatQuota(userId));
+});
+
+app.get('/api/chat/history', (req, res) => {
+  const userId = Number(req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  res.json({ messages: getChatHistory(userId) });
+});
+
+app.delete('/api/chat/history', (req, res) => {
+  const userId = Number((req.body as any)?.userId ?? req.query.userId);
+  if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+  clearChatHistory(userId);
+  res.json({ ok: true });
 });
 
 app.get('/api/research/companies', (req, res) => {

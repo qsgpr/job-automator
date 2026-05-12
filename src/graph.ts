@@ -4,6 +4,27 @@ import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { JsonOutputParser, StringOutputParser } from '@langchain/core/output_parsers';
 import type { Analysis } from './types.js';
 
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function withRetry<T>(fn: () => Promise<T>, label = 'llm'): Promise<T> {
+  const delays = [30_000, 90_000]; // 30s, then 90s
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const msg = String(e);
+      const isRate = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Too Many Requests') || msg.includes('quota');
+      if (isRate && i < delays.length) {
+        console.warn(`[rate-limit] ${label}: 429 received — waiting ${delays[i] / 1000}s (retry ${i + 1}/${delays.length})`);
+        await sleep(delays[i]);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error('withRetry: exhausted');
+}
+
 // ── State shared across graph nodes ──────────────────────────────────────────
 
 const AnalysisState = Annotation.Root({
@@ -32,7 +53,7 @@ async function extractRequirements(state: State): Promise<Partial<State>> {
   const llm = new ChatGoogleGenerativeAI({ model: 'gemini-2.5-flash', temperature: 0, apiKey: process.env.GOOGLE_API_KEY });
   const parser = new JsonOutputParser<{ requirements: string[]; nice_to_have: string[] }>();
   const chain = EXTRACT_PROMPT.pipe(llm).pipe(parser);
-  const result = await chain.invoke({ jd: state.jd.slice(0, 5000) });
+  const result = await withRetry(() => chain.invoke({ jd: state.jd.slice(0, 5000) }), 'extract');
   return {
     requirements: result.requirements ?? [],
     nice_to_have: result.nice_to_have ?? [],
@@ -67,11 +88,11 @@ async function scoreResume(state: State): Promise<Partial<State>> {
   const parser = new JsonOutputParser<Omit<Analysis, 'requirements' | 'nice_to_have'>>();
   const chain = SCORE_PROMPT.pipe(llm).pipe(parser);
 
-  const result = await chain.invoke({
+  const result = await withRetry(() => chain.invoke({
     requirements: state.requirements.map(r => `• ${r}`).join('\n'),
     nice_to_have: state.nice_to_have.map(r => `• ${r}`).join('\n'),
     resume: state.resume.slice(0, 3000),
-  });
+  }), 'score');
 
   const analysis: Analysis = {
     title:        result.title       ?? '',

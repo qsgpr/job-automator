@@ -1,9 +1,11 @@
-import { listJobs, agentListJobs, scrapeJob } from './scraper.js';
+import { listJobs, agentListJobs, scrapeJob, scrapeLinkedIn } from './scraper.js';
 import { analyze } from './analyzer.js';
 import { getUser, getActiveSites, getCachedFeedJob, upsertFeedJob, removeStaleFeedJobs, getCachedFeedJobsForUser } from './profiles.js';
 import type { Job, UserPreferences, FeedFilterResult, FeedJobResult, FeedScanEvent } from './types.js';
 
 export interface AbortSignal { readonly aborted: boolean }
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 // ── Filter helpers ────────────────────────────────────────────────────────────
 
@@ -135,12 +137,31 @@ export async function runFeedScan(
     const site = sites[i];
     emit({ type: 'site_start', site_id: site.id, site_name: site.name, site_index: i, total_sites: sites.length });
 
+    // ── Detect LinkedIn search sites ──────────────────────────────────────────
+    const isLinkedIn =
+      site.ats_type === 'linkedin' ||
+      site.url.toLowerCase().includes('linkedin.com/jobs/search');
+
     let jobs: Job[];
+    // For LinkedIn we collect descriptions in the same pass to avoid re-loading
+    // each job page a second time during the per-job loop below.
+    let linkedInDescriptions: Map<string, string> | null = null;
+
     const atsOverride = site.ats_type
       ? { type: site.ats_type, slug: site.ats_slug }
       : undefined;
     try {
-      if (site.ats_type === 'agent') {
+      if (isLinkedIn) {
+        emit({
+          type:      'agent_step',
+          site_id:   site.id,
+          site_name: site.name,
+          message:   'LinkedIn scraper — loading search results and extracting descriptions…',
+        });
+        const linkedInResults = await scrapeLinkedIn(site.url, emit);
+        jobs = linkedInResults.map(r => r.job);
+        linkedInDescriptions = new Map(linkedInResults.map(r => [r.job.url, r.description]));
+      } else if (site.ats_type === 'agent') {
         // Stream each navigation step so the UI can show Gemma's progress
         jobs = await agentListJobs(site.url, (step, action, currentUrl) => {
           emit({
@@ -206,7 +227,10 @@ export async function runFeedScan(
       let finalFilter = pre;
 
       try {
-        const jdText = await scrapeJob(job.url);
+        // For LinkedIn jobs, reuse the description already extracted during the
+        // card-scraping pass.  For other sources, scrape the individual job page.
+        const jdText = linkedInDescriptions?.get(job.url)
+          ?? await scrapeJob(job.url);
 
         finalFilter = applyFilters(job, user.preferences, jdText);
         if (finalFilter.result === 'hard_skip') {
@@ -220,6 +244,8 @@ export async function runFeedScan(
 
         analysis = await analyze(jdText, user.resume_text, job.url);
         totalAnalyzed++;
+        // Pace requests to avoid Gemini burst rate limits (2 calls per job)
+        await sleep(1500);
       } catch (e) {
         finalFilter = { ...finalFilter, warnings: [...finalFilter.warnings, `Analysis failed: ${(e as Error).message}`] };
       }
@@ -283,6 +309,7 @@ export async function reanalyzeFeedJobs(
     try {
       const jdText = await scrapeJob(job.url);
       analysis = await analyze(jdText, user.resume_text, job.url);
+      await sleep(1500);
     } catch (e) {
       emit({ type: 'site_error', site_id, site_name: job.title,
         message: `Re-analysis failed: ${(e as Error).message}` });
