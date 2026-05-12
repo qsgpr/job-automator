@@ -160,6 +160,15 @@ async function signOut() {
   _clearDemoAuth();
   activeUserId = null;
   window._activeUserDbProfile = null;
+  // Clear all rendered user data so next user starts fresh
+  const kanban = document.getElementById('kanban-board');
+  if (kanban) kanban.innerHTML = '';
+  const feedResults = document.getElementById('feed-results');
+  if (feedResults) { feedResults.innerHTML = ''; feedResults.removeAttribute('data-scan-active'); }
+  const chatMsgs = document.getElementById('chat-messages');
+  if (chatMsgs) { chatMsgs.innerHTML = ''; chatMsgs.removeAttribute('data-loaded'); }
+  feedResults = [];
+  feedTabInited = false;
   showLoginScreen();
 }
 
@@ -4616,13 +4625,6 @@ async function loadObservability() {
             <button class="mode-btn ${(settings.discovery_enabled || settings.scan_enabled) !== '1' ? 'active' : ''}" id="discovery-toggle-off" data-val="0">Off</button>
           </div>
         </div>
-        <div class="form-group">
-          <label class="label">Run as profile</label>
-          <select id="discovery-user-select" class="input">
-            <option value="">— select —</option>
-            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === (settings.discovery_user_id || settings.scan_user_id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
-          </select>
-        </div>
       </div>
       <div class="form-group" style="margin-top:14px">
         <label class="label">Schedule <span class="label-hint">cron expression — e.g. <code style="font-family:var(--mono)">0 9 * * *</code> = daily at 9am</span></label>
@@ -4652,13 +4654,6 @@ async function loadObservability() {
             <button class="mode-btn ${(settings.analyze_enabled || settings.scan_enabled) === '1' ? 'active' : ''}" id="analyze-toggle-on" data-val="1">On</button>
             <button class="mode-btn ${(settings.analyze_enabled || settings.scan_enabled) !== '1' ? 'active' : ''}" id="analyze-toggle-off" data-val="0">Off</button>
           </div>
-        </div>
-        <div class="form-group">
-          <label class="label">Run as profile</label>
-          <select id="analyze-user-select" class="input">
-            <option value="">— select —</option>
-            ${(users || []).map(u => `<option value="${u.id}" ${String(u.id) === (settings.analyze_user_id || settings.scan_user_id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
-          </select>
         </div>
       </div>
       <div class="form-group" style="margin-top:14px">
@@ -4769,7 +4764,7 @@ async function loadObservability() {
     await api.post('/api/settings', {
       discovery_enabled: discoveryEnabled ? '1' : '0',
       discovery_cron: settingsSection.querySelector('#discovery-cron-input').value.trim(),
-      discovery_user_id: settingsSection.querySelector('#discovery-user-select').value,
+      discovery_user_id: String(activeUserId),
     });
     status.textContent = '✓ Saved';
     setTimeout(() => { status.textContent = ''; }, 2500);
@@ -4781,7 +4776,7 @@ async function loadObservability() {
     await api.post('/api/settings', {
       analyze_enabled: analyzeEnabled ? '1' : '0',
       analyze_cron: settingsSection.querySelector('#analyze-cron-input').value.trim(),
-      analyze_user_id: settingsSection.querySelector('#analyze-user-select').value,
+      analyze_user_id: String(activeUserId),
     });
     status.textContent = '✓ Saved';
     setTimeout(() => { status.textContent = ''; }, 2500);
